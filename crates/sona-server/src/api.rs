@@ -1,14 +1,18 @@
 //! Plano de controle: HTTP + WebSocket. O áudio não depende de nenhum cliente
 //! conectado: fechar todas as abas não para o motor (FR-06).
+//!
+//! Acesso (ver `auth.rs`): pedido deste computador usa a senha do app (ou entra
+//! direto sem ela); pedido de outro computador só passa com acesso remoto ligado
+//! e token de sessão remota.
 
 use crate::audio::EngineStats;
-use crate::auth::{Auth, Role};
+use crate::auth::{Auth, Scope};
 use crate::state::Store;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -28,7 +32,7 @@ pub struct App {
     pub tx: broadcast::Sender<Arc<str>>,
     pub sessions: AtomicU64,
     pub clients: AtomicU64,
-    /// Endereços de acesso na rede (ex.: http://192.168.0.10:7340).
+    /// Endereços deste computador na rede (ex.: http://192.168.0.10:7340).
     pub lan_urls: Vec<String>,
     login_failures: Mutex<HashMap<IpAddr, (u32, Instant)>>,
 }
@@ -71,10 +75,9 @@ impl App {
 pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
     let api = Router::new()
         .route("/api/health", get(health))
+        .route("/api/access", get(access).post(update_access))
+        .route("/api/login", axum::routing::post(login))
         .route("/api/state", get(state))
-        .route("/api/tokens", post(issue_token))
-        .route("/api/login", post(login))
-        .route("/api/password", post(set_password).get(password_roles))
         .route("/api/devices", get(devices))
         .route("/api/ws", get(ws));
     let api = match web_dir {
@@ -87,45 +90,75 @@ pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
     api.with_state(app)
 }
 
+fn is_local(peer: &SocketAddr) -> bool {
+    match peer.ip() {
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
+    }
+}
+
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get("authorization")?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
+fn deny(code: StatusCode, msg: &str) -> Response {
+    (code, Json(json!({ "error": msg }))).into_response()
+}
+
+/// Confere o token e a origem. Token local só vale deste computador; token
+/// remoto só vale com o acesso remoto ligado (desligar apaga as sessões remotas).
 #[allow(clippy::result_large_err)]
-fn authed(app: &App, token: Option<&str>) -> Result<(String, Role), Response> {
-    token
-        .and_then(|t| app.auth.lock().unwrap().verify(t))
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(json!({"error": "Token ausente ou inválido."}))).into_response())
+fn authed(app: &App, token: Option<&str>, peer: &SocketAddr) -> Result<(String, Scope), Response> {
+    let Some((name, scope)) = token.and_then(|t| app.auth.lock().unwrap().verify(t)) else {
+        return Err(deny(StatusCode::UNAUTHORIZED, "Sessão ausente ou encerrada. Entre de novo."));
+    };
+    if scope == Scope::Local && !is_local(peer) {
+        return Err(deny(StatusCode::UNAUTHORIZED, "Esta sessão só vale no computador do servidor."));
+    }
+    if scope == Scope::Remote && !app.auth.lock().unwrap().status().remote_enabled {
+        return Err(deny(StatusCode::UNAUTHORIZED, "Acesso remoto desligado."));
+    }
+    Ok((name, scope))
 }
 
 async fn health(State(app): State<Shared>) -> Json<Value> {
-    let password_login = app.auth.lock().unwrap().has_password();
+    Json(json!({ "name": "sona", "version": env!("CARGO_PKG_VERSION"), "engine": app.engine_status() }))
+}
+
+/// Sem token: diz à tela de entrada o que pedir.
+async fn access(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Json<Value> {
+    let st = app.auth.lock().unwrap().status();
+    let local = is_local(&peer);
     Json(json!({
-        "name": "sona",
-        "version": env!("CARGO_PKG_VERSION"),
-        "engine": app.engine_status(),
-        "password_login": password_login,
-        "lan_urls": app.lan_urls,
+        "local": local,
+        // A primeira configuração só aparece neste computador.
+        "setup_needed": local && !st.setup_done,
+        "app_password": st.app_password,
+        "remote_enabled": st.remote_enabled,
+        "lan_urls": if local || st.remote_enabled { app.lan_urls.clone() } else { Vec::new() },
     }))
 }
 
 #[derive(Deserialize)]
 struct LoginReq {
+    #[serde(default)]
     password: String,
     #[serde(default)]
     name: String,
 }
 
-/// Entrada com senha: devolve um token de sessão do perfil da senha.
 async fn login(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Json(req): Json<LoginReq>) -> Response {
     let ip = peer.ip();
+    let scope = if is_local(&peer) { Scope::Local } else { Scope::Remote };
+    if scope == Scope::Remote && !app.auth.lock().unwrap().status().remote_enabled {
+        return deny(StatusCode::FORBIDDEN, "Acesso remoto desligado. Ative no computador do servidor, em Configurações.");
+    }
     {
         let mut f = app.login_failures.lock().unwrap();
         if let Some((n, at)) = f.get(&ip).copied() {
             if n >= MAX_FAILURES && at.elapsed() < LOCKOUT {
                 let wait = (LOCKOUT - at.elapsed()).as_secs() + 1;
-                return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": format!("Muitas tentativas. Tente de novo em {wait} s.")})))
-                    .into_response();
+                return deny(StatusCode::TOO_MANY_REQUESTS, &format!("Muitas tentativas. Tente de novo em {wait} s."));
             }
             if at.elapsed() >= LOCKOUT {
                 f.remove(&ip);
@@ -135,98 +168,111 @@ async fn login(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketA
     // Argon2 custa dezenas de ms: roda fora do executor assíncrono.
     let app2 = app.clone();
     let password = req.password;
-    let role = tokio::task::spawn_blocking(move || app2.auth.lock().unwrap().check_password(&password)).await.ok().flatten();
-    match role {
-        Some(role) => {
-            app.login_failures.lock().unwrap().remove(&ip);
-            let name = match req.name.trim() {
-                "" => format!("{ip}"),
-                n => n.chars().take(40).collect(),
-            };
-            let token = app.auth.lock().unwrap().issue(&name, role, true);
-            tracing::info!("entrada com senha: {name} ({role:?}) de {ip}");
-            Json(json!({ "token": token, "role": role })).into_response()
-        }
-        None => {
-            let mut f = app.login_failures.lock().unwrap();
-            let e = f.entry(ip).or_insert((0, Instant::now()));
-            e.0 += 1;
-            e.1 = Instant::now();
-            tracing::warn!("senha errada de {ip} ({}ª)", e.0);
-            (StatusCode::UNAUTHORIZED, Json(json!({"error": "Senha incorreta."}))).into_response()
-        }
+    let ok = tokio::task::spawn_blocking(move || app2.auth.lock().unwrap().check(scope, &password)).await.unwrap_or(false);
+    if !ok {
+        let mut f = app.login_failures.lock().unwrap();
+        let e = f.entry(ip).or_insert((0, Instant::now()));
+        e.0 += 1;
+        e.1 = Instant::now();
+        tracing::warn!("senha errada de {ip} ({}ª)", e.0);
+        return deny(StatusCode::UNAUTHORIZED, "Senha incorreta.");
     }
-}
-
-async fn password_roles(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    match authed(&app, bearer(&headers)) {
-        Ok((_, Role::Admin)) => Json(json!({ "password_roles": app.auth.lock().unwrap().password_roles() })).into_response(),
-        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin vê as senhas configuradas."}))).into_response(),
-        Err(r) => r,
+    app.login_failures.lock().unwrap().remove(&ip);
+    let name = match (scope, req.name.trim()) {
+        (Scope::Local, _) => "Este computador".to_string(),
+        (_, "") => ip.to_string(),
+        (_, n) => n.chars().take(40).collect(),
+    };
+    let token = app.auth.lock().unwrap().issue(&name, scope);
+    if scope == Scope::Remote {
+        tracing::info!("entrada remota: {name} de {ip}");
     }
+    Json(json!({ "token": token, "name": name })).into_response()
 }
 
-#[derive(Deserialize)]
-struct PasswordReq {
-    role: Role,
-    /// `null` apaga a senha do perfil.
-    password: Option<String>,
-}
-
-async fn set_password(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<PasswordReq>) -> Response {
-    match authed(&app, bearer(&headers)) {
-        Ok((name, Role::Admin)) => {
-            let app2 = app.clone();
-            let r = tokio::task::spawn_blocking(move || app2.auth.lock().unwrap().set_password(req.role, req.password.as_deref())).await;
-            match r {
-                Ok(Ok(())) => {
-                    tracing::info!("{name} mudou a senha do perfil {:?}", req.role);
-                    let roles = app.auth.lock().unwrap().password_roles();
-                    Json(json!({ "ok": true, "password_roles": roles })).into_response()
-                }
-                Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
-                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Falha ao salvar a senha." }))).into_response(),
+/// Muda senhas e conclui a primeira configuração. Campo ausente = sem mudança;
+/// `null` = apagar a senha.
+#[allow(clippy::result_large_err)]
+async fn update_access(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let token = bearer(&headers).map(str::to_string);
+    let (name, _) = match authed(&app, token.as_deref(), &peer) {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    let field = |k: &str| -> Result<Option<Option<String>>, Response> {
+        match body.get(k) {
+            None => Ok(None),
+            Some(Value::Null) => Ok(Some(None)),
+            Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+            Some(_) => Err(deny(StatusCode::BAD_REQUEST, "Senha precisa ser texto ou null.")),
+        }
+    };
+    let (app_pw, remote_pw) = match (field("app_password"), field("remote_password")) {
+        (Ok(a), Ok(r)) => (a, r),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
+    let finish = body.get("finish_setup").and_then(Value::as_bool).unwrap_or(false);
+    let app2 = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut a = app2.auth.lock().unwrap();
+        // Valida as duas antes de gravar qualquer uma.
+        for p in [&app_pw, &remote_pw].into_iter().flatten().flatten() {
+            if p.chars().count() < crate::auth::MIN_PASSWORD {
+                return Err(format!("A senha precisa de pelo menos {} caracteres.", crate::auth::MIN_PASSWORD));
             }
         }
-        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin muda senhas."}))).into_response(),
-        Err(r) => r,
+        if let Some(p) = app_pw {
+            a.set_password(Scope::Local, p.as_deref(), token.as_deref())?;
+        }
+        if let Some(p) = remote_pw {
+            a.set_password(Scope::Remote, p.as_deref(), token.as_deref())?;
+        }
+        if finish {
+            a.finish_setup();
+        }
+        Ok(a.status())
+    })
+    .await;
+    match result {
+        Ok(Ok(st)) => {
+            tracing::info!("{name} mudou o acesso: senha do app {}, acesso remoto {}", on(st.app_password), on(st.remote_enabled));
+            Json(json!({ "app_password": st.app_password, "remote_enabled": st.remote_enabled, "setup_done": st.setup_done }))
+                .into_response()
+        }
+        Ok(Err(e)) => deny(StatusCode::BAD_REQUEST, &e),
+        Err(_) => deny(StatusCode::INTERNAL_SERVER_ERROR, "Falha ao salvar."),
     }
 }
 
-async fn state(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    match authed(&app, bearer(&headers)) {
+fn on(b: bool) -> &'static str {
+    if b {
+        "ligada"
+    } else {
+        "desligada"
+    }
+}
+
+async fn state(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    match authed(&app, bearer(&headers), &peer) {
         Ok(_) => Json(app.store.lock().unwrap().snapshot()).into_response(),
         Err(r) => r,
     }
 }
 
-#[derive(Deserialize)]
-struct TokenReq {
-    name: String,
-    role: Role,
-}
-
-async fn issue_token(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<TokenReq>) -> Response {
-    match authed(&app, bearer(&headers)) {
-        Ok((_, Role::Admin)) => {
-            let token = app.auth.lock().unwrap().issue(&req.name, req.role, false);
-            Json(json!({ "token": token, "role": req.role })).into_response()
-        }
-        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin cria acessos."}))).into_response(),
-        Err(r) => r,
-    }
-}
-
-async fn devices(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    match authed(&app, bearer(&headers)) {
-        Ok((_, Role::Admin)) => {
+async fn devices(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    match authed(&app, bearer(&headers), &peer) {
+        Ok(_) => {
             #[cfg(feature = "hw")]
             let list = tokio::task::spawn_blocking(crate::audio::hw::list_devices).await.unwrap_or_default();
             #[cfg(not(feature = "hw"))]
             let list: Vec<Value> = Vec::new();
             Json(json!({ "devices": list })).into_response()
         }
-        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin lista dispositivos."}))).into_response(),
         Err(r) => r,
     }
 }
@@ -236,11 +282,16 @@ struct WsQuery {
     token: Option<String>,
 }
 
-async fn ws(State(app): State<Shared>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
-    match authed(&app, q.token.as_deref()) {
-        Ok((name, role)) => {
+async fn ws(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Query(q): Query<WsQuery>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    match authed(&app, q.token.as_deref(), &peer) {
+        Ok((name, _)) => {
             let token = q.token.unwrap_or_default();
-            upgrade.on_upgrade(move |socket| session(app, socket, name, role, token))
+            upgrade.on_upgrade(move |socket| session(app, socket, name, token))
         }
         Err(r) => r,
     }
@@ -261,10 +312,10 @@ enum ClientMsg {
     Ping,
 }
 
-async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token: String) {
+async fn session(app: Shared, socket: WebSocket, name: String, token: String) {
     let id = app.sessions.fetch_add(1, Relaxed) + 1;
     app.clients.fetch_add(1, Relaxed);
-    tracing::info!("cliente {id} conectou ({name}, {role:?})");
+    tracing::info!("cliente {id} conectou ({name})");
     let (mut sink, mut stream) = socket.split();
     let (direct_tx, mut direct_rx) = mpsc::channel::<String>(32);
     let mut bcast = app.tx.subscribe();
@@ -273,7 +324,6 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token
         "type": "hello",
         "session": id,
         "name": name,
-        "role": role,
         "state": app.store.lock().unwrap().snapshot(),
         "engine": app.engine_status(),
     });
@@ -289,10 +339,10 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token
         loop {
             let text: String = tokio::select! {
                 _ = check.tick() => {
-                    // Senha trocada ou acesso revogado: encerra a sessão aberta.
+                    // Senha trocada ou acesso remoto desligado: encerra a sessão aberta.
                     if app_w.auth.lock().unwrap().verify(&token).is_none() {
                         revoked_w.store(true, Relaxed);
-                        let msg = json!({"type": "revoked", "message": "Seu acesso foi encerrado (senha trocada). Entre de novo."});
+                        let msg = json!({"type": "revoked", "message": "Sua sessão foi encerrada porque a senha mudou. Entre de novo."});
                         let _ = sink.send(Message::Text(msg.to_string().into())).await;
                         let _ = sink.send(Message::Close(None)).await;
                         break;
@@ -331,13 +381,13 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token
         let result = {
             let mut store = app.store.lock().unwrap();
             match parsed {
-                ClientMsg::Patch { path, value } => store.patch(role, &path, value),
-                ClientMsg::SceneSave { name } if role != Role::Monitor => {
+                ClientMsg::Patch { path, value } => store.patch(&path, value),
+                ClientMsg::SceneSave { name } => {
                     store.save_scene(&name);
                     Ok(())
                 }
-                ClientMsg::SceneRecall { name } if role != Role::Monitor => store.recall_scene(&name),
-                ClientMsg::SceneDelete { name } if role == Role::Admin => {
+                ClientMsg::SceneRecall { name } => store.recall_scene(&name),
+                ClientMsg::SceneDelete { name } => {
                     store.delete_scene(&name);
                     Ok(())
                 }
@@ -345,7 +395,6 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token
                     reply(json!({"type": "pong"}));
                     continue;
                 }
-                _ => Err(crate::state::PatchError::Forbidden("Seu perfil não pode fazer isso.".into())),
             }
         };
         match result {

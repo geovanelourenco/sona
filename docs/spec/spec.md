@@ -67,29 +67,34 @@ silêncio no lugar).
 
 Cliente → servidor:
 
-| type | campos | perfil mínimo |
-|---|---|---|
-| `patch` | `path` (JSON Pointer), `value` (merge patch) | depende do caminho (ADR 0005) |
-| `scene.save` / `scene.recall` | `name` | operador |
-| `scene.delete` | `name` | admin |
-| `ping` | — | qualquer |
+| type | campos |
+|---|---|
+| `patch` | `path` (JSON Pointer), `value` (merge patch) |
+| `scene.save` / `scene.recall` / `scene.delete` | `name` |
+| `ping` | — |
 
-Servidor → cliente: `hello` (sessão, perfil, estado, motor), `state` (estado
+Servidor → cliente: `hello` (sessão, nome, estado, motor), `state` (estado
 inteiro + `rev` + `by`), `meters` (`ch`, `gr`, `gate`, `bus`, `lim`), `engine`,
-`error` (`message`, `issues`), `pong`.
+`error` (`message`, `issues`), `revoked` (sessão encerrada), `pong`.
 
-Servidor → cliente também: `revoked` (sessão encerrada porque a senha mudou).
+HTTP:
 
-HTTP: `GET /api/health` (sem token; informa `password_login` e `lan_urls`),
-`POST /api/login` (`password`, `name` → `token`, `role`; 401 senha errada, 429
-bloqueio), `GET|POST /api/password` (admin; `role`, `password` ou `null`),
-`GET /api/state`, `POST /api/tokens` (admin), `GET /api/devices` (admin).
-Interface estática na raiz.
+| Rota | Token | Uso |
+|---|---|---|
+| `GET /api/health` | não | versão e estado do motor |
+| `GET /api/access` | não | `local`, `setup_needed`, `app_password`, `remote_enabled`, `lan_urls` |
+| `POST /api/login` | não | `password`, `name` → `token`, `name`. 401 senha errada, 403 remoto desligado, 429 bloqueio |
+| `POST /api/access` | sim | `app_password`, `remote_password` (texto ou `null`), `finish_setup` |
+| `GET /api/state` | sim | estado |
+| `GET /api/devices` | sim | dispositivos de áudio |
+
+Interface estática na raiz (servida também para a rede, para mostrar a tela de
+entrada). Regras de acesso: ADR 0005.
 
 ## 7. Persistência
 
 `data/state.json` (`format: 1`, `mixer`, `scenes`) e `data/auth.json` (hashes
-de tokens e de senhas por perfil).
+das sessões, da senha do app e da senha remota; `setup_done`).
 Gravação 0,5 s depois da última mudança e no desligamento.
 
 ## 8. Requisitos e onde são verificados

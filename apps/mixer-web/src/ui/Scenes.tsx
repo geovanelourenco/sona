@@ -6,7 +6,6 @@ import { Btn, cx } from './kit';
 /** Cenas: salvar o mix atual e chamar de volta. Chamar cena não mexe no roteamento físico. */
 export function Scenes() {
   const st = useMixer((s) => s.state);
-  const role = useMixer((s) => s.role);
   const send = useMixer((s) => s.send);
   const toast = useMixer((s) => s.toast);
   const [open, setOpen] = useState(false);
@@ -18,7 +17,6 @@ export function Scenes() {
     window.addEventListener('pointerdown', close);
     return () => window.removeEventListener('pointerdown', close);
   }, [open]);
-  if (role === 'monitor') return null;
   return (
     <div ref={box} className="relative">
       <Btn variant="secondary" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -57,7 +55,7 @@ export function Scenes() {
                 >
                   {s}
                 </button>
-                {role === 'admin' && (
+                {(
                   <button type="button" aria-label={`Apagar cena ${s}`} className="h-8 rounded-lg px-2 text-[11.5px] text-muted hover:text-live-light" onClick={() => confirm(`Apagar a cena "${s}"?`) && send({ type: 'scene.delete', name: s })}>
                     Apagar
                   </button>

@@ -2,7 +2,6 @@
 //! persistência atômica e entrega de planos ao motor.
 
 use crate::audio::IoLayout;
-use crate::auth::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sona_core::*;
@@ -33,7 +32,6 @@ pub struct Store {
 
 #[derive(Debug)]
 pub enum PatchError {
-    Forbidden(String),
     Invalid(String),
     Rejected(Validation),
 }
@@ -41,7 +39,7 @@ pub enum PatchError {
 impl std::fmt::Display for PatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatchError::Forbidden(m) | PatchError::Invalid(m) => f.write_str(m),
+            PatchError::Invalid(m) => f.write_str(m),
             PatchError::Rejected(v) => {
                 let msgs: Vec<_> = v.errors.iter().map(|i| i.message.as_str()).collect();
                 write!(f, "Configuração recusada: {}", msgs.join(" "))
@@ -215,8 +213,7 @@ impl Store {
     }
 
     /// Aplica um JSON Merge Patch (RFC 7386) no caminho dado.
-    pub fn patch(&mut self, role: Role, path: &str, value: Value) -> Result<(), PatchError> {
-        authorize(role, path, &value, &self.mixer)?;
+    pub fn patch(&mut self, path: &str, value: Value) -> Result<(), PatchError> {
         let mut doc = serde_json::to_value(&self.mixer).expect("serializa");
         let target = doc.pointer_mut(path).ok_or_else(|| PatchError::Invalid(format!("Caminho {path} não existe.")))?;
         merge(target, value);
@@ -304,59 +301,5 @@ fn merge(target: &mut Value, patch: Value) {
             }
         }
         other => *target = other,
-    }
-}
-
-/// Campos que só o admin muda: roteamento físico e estrutura.
-const ADMIN_CHANNEL_KEYS: &[&str] = &["source"];
-const ADMIN_BUS_KEYS: &[&str] = &["outputs", "enabled", "kind", "bus_sends"];
-
-fn touched_keys(path: &str, value: &Value) -> Vec<String> {
-    // "/channels/3" + {"fader_db":..} → ["fader_db"]; "/channels/3/source" → ["source"].
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if parts.len() >= 3 {
-        return vec![parts[2].to_string()];
-    }
-    value.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
-}
-
-pub fn authorize(role: Role, path: &str, value: &Value, mixer: &MixerConfig) -> Result<(), PatchError> {
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    let deny = |m: &str| Err(PatchError::Forbidden(m.into()));
-    match role {
-        Role::Admin => Ok(()),
-        Role::Operator => match parts.as_slice() {
-            ["channels", idx, ..] if idx.parse::<usize>().is_ok() => {
-                if touched_keys(path, value).iter().any(|k| ADMIN_CHANNEL_KEYS.contains(&k.as_str())) {
-                    deny("Só o admin muda a fonte de um canal.")
-                } else {
-                    Ok(())
-                }
-            }
-            ["buses", idx, ..] if idx.parse::<usize>().is_ok() => {
-                if touched_keys(path, value).iter().any(|k| ADMIN_BUS_KEYS.contains(&k.as_str())) {
-                    deny("Só o admin muda saídas e ligação de buses.")
-                } else {
-                    Ok(())
-                }
-            }
-            _ => deny("Só o admin muda a estrutura do mixer."),
-        },
-        Role::Monitor => match parts.as_slice() {
-            ["buses", idx, rest @ ..] => {
-                let Some(bus) = idx.parse::<usize>().ok().and_then(|b| mixer.buses.get(b)) else { return deny("Bus não existe.") };
-                let only_monitor = match rest {
-                    ["monitor", ..] => true,
-                    [] => value.as_object().is_some_and(|m| m.keys().all(|k| k == "monitor")),
-                    _ => false,
-                };
-                if bus.kind == BusKind::Monitor && only_monitor {
-                    Ok(())
-                } else {
-                    deny("Perfil monitor só muda o próprio fone (solo e acompanhamento).")
-                }
-            }
-            _ => deny("Perfil monitor não muda o mix."),
-        },
     }
 }

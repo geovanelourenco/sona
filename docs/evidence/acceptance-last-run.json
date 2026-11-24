@@ -1,15 +1,40 @@
 {
-  "at": "2026-11-24T22:50:06.295Z",
+  "at": "2026-11-24T23:17:01.481Z",
   "platform": "linux",
   "results": [
     {
       "id": "FR-12",
-      "name": "recusa controle e áudio sem token válido",
+      "name": "neste computador, sem senha do app, entra direto e vê a primeira configuração",
       "ok": true
     },
     {
       "id": "FR-12",
-      "name": "perfis: operador não muda roteamento; monitor só mexe no próprio fone",
+      "name": "recusa controle sem sessão válida",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "acesso remoto desligado: outro computador não entra nem com sessão local",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "primeira configuração liga o acesso remoto com senha",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "trocar a senha remota encerra as sessões remotas abertas",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "senha do app passa a ser pedida neste computador; quem a criou continua dentro",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "recuperação pela linha de comando vale sem reiniciar",
       "ok": true
     },
     {
@@ -44,27 +69,12 @@
     },
     {
       "id": "FR-12",
-      "name": "senha: sem senha definida, ninguém entra por senha",
-      "ok": true
-    },
-    {
-      "id": "FR-12",
-      "name": "senha definida pelo admin dá sessão com o perfil certo",
-      "ok": true
-    },
-    {
-      "id": "FR-12",
-      "name": "trocar a senha encerra sessões abertas com a antiga",
-      "ok": true
-    },
-    {
-      "id": "FR-12",
-      "name": "senha definida na linha de comando vale sem reiniciar",
-      "ok": true
-    },
-    {
-      "id": "FR-12",
       "name": "muitas senhas erradas bloqueiam o IP por um tempo",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "desligar o acesso remoto derruba todos os remotos",
       "ok": true
     },
     {
@@ -75,11 +85,6 @@
     {
       "id": "FR-10",
       "name": "estado corrompido não derruba o servidor",
-      "ok": true
-    },
-    {
-      "id": "FR-12",
-      "name": "abrir na rede sem senha é recusado; com senha, abre e mostra o endereço",
       "ok": true
     }
   ]

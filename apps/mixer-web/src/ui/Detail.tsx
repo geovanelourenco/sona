@@ -11,12 +11,11 @@ const KIND_LABEL: Record<EqBandKind, string> = { low_shelf: 'Shelf grave', peaki
 /** Processamento do canal selecionado: entrada, gate, EQ, compressor e envios. */
 export function Detail({ index, onClose }: { index: number; onClose: () => void }) {
   const st = useMixer((s) => s.state)!;
-  const role = useMixer((s) => s.role);
   const engine = useMixer((s) => s.engine);
   const patch = useMixer((s) => s.patch);
   const ch = st.mixer.channels[index];
   if (!ch) return null;
-  const dis = role === 'monitor';
+  const dis = false;
   const p = (v: Partial<ChannelConfig>) => patch(`/channels/${index}`, v);
   const sr = engine?.sample_rate || 48000;
 

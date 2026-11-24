@@ -17,14 +17,14 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 | FR-09 Endpoints do sistema | ⏳ | Fase 3 com dispositivos virtuais existentes (ADR 0004). |
 | FR-10 Persistência e cenas | ✅ | e2e: reinício restaura mix e cenas; entrada ausente vira aviso visível e o motor roda; estado corrompido não derruba. |
 | FR-11 Recuperação de falhas | 🟡 | Motor trata entrada ausente como silêncio. Console reconecta sozinho. Falta: reabrir dispositivo USB que caiu e recuperar com fade; bridge (fase 3). 🔧 |
-| FR-12 Descoberta e autenticação | 🟡 | Senha por perfil para acesso pela rede (Argon2id), definida na máquina ou pelo admin; troca derruba sessões; bloqueio após 5 erros; recusa abrir na rede sem senha; endereços da rede no log e no console (e2e: 9 verificações). Falta mDNS (hoje o endereço é digitado), HTTPS fora da LAN. |
+| FR-12 Descoberta e autenticação | 🟡 | Primeira configuração e Configurações pela interface: senha de acesso remoto (sem ela, pedidos da rede são recusados) e senha do app (opcional, neste computador). Troca encerra sessões; bloqueio após 5 erros; recuperação pela linha de comando. e2e com pedidos reais pelo IP da rede (11 verificações). Falta mDNS (endereço digitado), HTTPS fora da LAN. |
 
 ## Segurança de operação
 
 | Item | Estado |
 |---|---|
 | Ciclo no grafo recusado | ✅ motor + e2e |
-| Retorno de PA nasce desligado, ligar pede confirmação e perfil admin | ✅ |
+| Retorno de PA nasce desligado, ligar pede confirmação | ✅ |
 | Aviso de laço pela mesa | ✅ `aviso_de_laco_pela_mesa` |
 | Solo nunca afeta transmissão ou PA | ✅ por construção e por teste |
 | PA físico independe do servidor | 🔧 arquitetura garante (servidor só lê USB e devolve retornos); validar na igreja |
@@ -42,5 +42,6 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 1. Bancada com a Ui24R em Linux e Windows (ADR 0002) — pede acesso ao hardware.
 2. Prioridade de tempo real na thread de áudio e novo bench.
 3. Tela de dispositivos no console (FR-01) e troca de dispositivo sem reiniciar.
-4. Fase 3: `crates/sona-net` (RTP/PCM, jitter buffer, deriva) e `apps/bridge`.
-5. Grupos DCA depois que o grafo estiver estável.
+4. App de desktop que liga o servidor e abre o console (decidir Tauri ou Electron).
+5. Fase 3: `crates/sona-net` (RTP/PCM, jitter buffer, deriva) e `apps/bridge`.
+6. Grupos DCA depois que o grafo estiver estável.

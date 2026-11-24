@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { setMeters } from './meters';
-import type { EngineStatus, MixerConfig, Role, ServerState } from './types';
+import type { EngineStatus, MixerConfig, ServerState } from './types';
 
 type Conn = 'idle' | 'connecting' | 'open' | 'closed' | 'unauthorized';
 
@@ -12,7 +12,6 @@ interface Toast {
 
 interface Store {
   conn: Conn;
-  role: Role | null;
   name: string;
   session: number;
   state: ServerState | null;
@@ -86,7 +85,6 @@ export function applyAt(doc: MixerConfig, path: string, value: unknown): MixerCo
 
 export const useMixer = create<Store>((set, get) => ({
   conn: 'idle',
-  role: null,
   name: '',
   session: 0,
   state: null,
@@ -115,7 +113,7 @@ export const useMixer = create<Store>((set, get) => ({
       const m = JSON.parse(e.data);
       switch (m.type) {
         case 'hello':
-          set({ conn: 'open', role: m.role, name: m.name, session: m.session, state: m.state, engine: m.engine });
+          set({ conn: 'open', name: m.name, session: m.session, state: m.state, engine: m.engine });
           break;
         case 'state':
           // Eco do próprio patch com fila ainda pendente: espera a fila esvaziar.
@@ -136,7 +134,7 @@ export const useMixer = create<Store>((set, get) => ({
           wantToken = null;
           ws = null;
           sock.close();
-          set({ conn: 'idle', state: null, role: null, loginNotice: m.message });
+          set({ conn: 'idle', state: null, loginNotice: m.message });
           break;
       }
     };
@@ -168,7 +166,7 @@ export const useMixer = create<Store>((set, get) => ({
     clearTimeout(retryTimer);
     ws?.close();
     ws = null;
-    set({ conn: 'idle', state: null, role: null });
+    set({ conn: 'idle', state: null });
   },
 
   send(msg) {

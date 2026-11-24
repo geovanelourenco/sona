@@ -16,7 +16,7 @@ const base = `http://127.0.0.1:${PORT}`;
 const results = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function start(args = ['--data', data, '--bind', `127.0.0.1:${PORT}`]) {
+function start(args = ['--data', data, '--port', String(PORT)]) {
   const p = spawn(bin, args, { env: { ...process.env, RUST_LOG: 'warn,sona_server=info', NO_COLOR: '1' } });
   let log = '';
   p.stdout.on('data', (d) => (log += d));
@@ -35,9 +35,9 @@ async function waitUp() {
   throw new Error('servidor não subiu');
 }
 
-function client(token) {
+function client(token, host = `127.0.0.1:${PORT}`) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/ws?token=${token}`);
+    const ws = new WebSocket(`ws://${host}/api/ws?token=${token}`);
     const c = { ws, state: null, hello: null, errors: [], meters: null, waiters: [] };
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
@@ -73,35 +73,85 @@ async function check(id, name, fn) {
 
 let srv = start();
 await waitUp();
-const admin = srv.log().match(/token=([0-9a-f]+)/)?.[1];
-assert.ok(admin, 'token de admin no log');
+const access = async (b = base) => (await fetch(`${b}/api/access`)).json();
+const login = (password = '', b = base, name = 'Teste') =>
+  fetch(`${b}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, name }) });
+const tokenOf = async (r) => (await r.json()).token;
+const update = (token, change, b = base) =>
+  fetch(`${b}/api/access`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(change) });
 
-await check('FR-12', 'recusa controle e áudio sem token válido', async () => {
+const first = await access();
+// Endereço deste computador na rede: pedidos por ele chegam como "outro computador".
+const lanBase = first.lan_urls[0];
+const lanHost = lanBase?.replace('http://', '');
+let admin = await tokenOf(await login());
+
+await check('FR-12', 'neste computador, sem senha do app, entra direto e vê a primeira configuração', async () => {
+  assert.equal(first.local, true);
+  assert.equal(first.setup_needed, true);
+  assert.equal(first.remote_enabled, false);
+  assert.ok(admin);
+  assert.ok(lanBase, 'há um endereço de rede para os testes remotos');
+});
+
+await check('FR-12', 'recusa controle sem sessão válida', async () => {
   assert.equal((await fetch(`${base}/api/state`)).status, 401);
   assert.equal((await fetch(`${base}/api/state`, { headers: { Authorization: 'Bearer 00' } })).status, 401);
   await assert.rejects(client('deadbeef'));
 });
 
-const mkToken = async (name, role) => (await (await fetch(`${base}/api/tokens`, { method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name, role }) })).json()).token;
-const opToken = await mkToken('Operador A', 'operator');
-const monToken = await mkToken('Fone B', 'monitor');
+await check('FR-12', 'acesso remoto desligado: outro computador não entra nem com sessão local', async () => {
+  const acc = await access(lanBase);
+  assert.equal(acc.local, false);
+  assert.equal(acc.setup_needed, false, 'primeira configuração só aparece no servidor');
+  assert.deepEqual(acc.lan_urls, [], 'não revela endereços com remoto desligado');
+  assert.equal((await login('', lanBase)).status, 403);
+  assert.equal((await fetch(`${lanBase}/api/state`, { headers: { Authorization: `Bearer ${admin}` } })).status, 401, 'token local não vale pela rede');
+  await assert.rejects(client(admin, lanHost));
+});
 
-await check('FR-12', 'perfis: operador não muda roteamento; monitor só mexe no próprio fone', async () => {
-  const op = await client(opToken);
-  op.send({ type: 'patch', path: '/channels/0', value: { source: { kind: 'none' } } });
-  op.send({ type: 'patch', path: '/buses/1', value: { enabled: true } });
-  await sleep(200);
-  assert.equal(op.errors.length, 2, JSON.stringify(op.errors));
-  const mon = await client(monToken);
-  mon.send({ type: 'patch', path: '/channels/0', value: { fader_db: 0 } });
-  mon.send({ type: 'patch', path: '/buses/4/monitor', value: { solo: [1] } });
-  await sleep(200);
-  assert.equal(mon.errors.length, 1, JSON.stringify(mon.errors));
-  assert.deepEqual(mon.state.mixer.buses[4].monitor.solo, [1]);
-  mon.send({ type: 'patch', path: '/buses/4/monitor', value: { solo: [] } });
-  await sleep(100);
-  op.ws.close();
-  mon.ws.close();
+let remoteToken;
+await check('FR-12', 'primeira configuração liga o acesso remoto com senha', async () => {
+  assert.equal((await update(admin, { remote_password: '123' })).status, 400, 'senha curta recusada');
+  const r = await update(admin, { remote_password: 'culto-domingo', finish_setup: true });
+  assert.equal(r.status, 200);
+  const acc = await access();
+  assert.equal(acc.setup_needed, false);
+  assert.equal(acc.remote_enabled, true);
+  assert.equal((await login('errada', lanBase)).status, 401);
+  const ok = await login('culto-domingo', lanBase, 'Ana');
+  assert.equal(ok.status, 200);
+  remoteToken = await tokenOf(ok);
+  const c = await client(remoteToken, lanHost);
+  assert.equal(c.hello.name, 'Ana');
+  c.ws.close();
+});
+
+await check('FR-12', 'trocar a senha remota encerra as sessões remotas abertas', async () => {
+  const c = await client(remoteToken, lanHost);
+  const revoked = c.until((m) => m.type === 'revoked', 4000);
+  assert.equal((await update(admin, { remote_password: 'culto-noite' })).status, 200);
+  await revoked;
+  assert.equal((await fetch(`${lanBase}/api/state`, { headers: { Authorization: `Bearer ${remoteToken}` } })).status, 401);
+  assert.equal((await login('culto-domingo', lanBase)).status, 401);
+  remoteToken = await tokenOf(await login('culto-noite', lanBase));
+  assert.ok(remoteToken);
+});
+
+await check('FR-12', 'senha do app passa a ser pedida neste computador; quem a criou continua dentro', async () => {
+  assert.equal((await update(admin, { app_password: 'so-aqui-123' })).status, 200);
+  assert.equal((await fetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${admin}` } })).status, 200, 'sessão de quem trocou continua');
+  assert.equal((await login('')).status, 401);
+  assert.equal((await login('culto-noite')).status, 401, 'senha remota não abre o app local');
+  assert.equal((await login('so-aqui-123')).status, 200);
+});
+
+await check('FR-12', 'recuperação pela linha de comando vale sem reiniciar', async () => {
+  const r = spawnSync(bin, ['--data', data, 'password', '--app', '--clear'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  await sleep(50);
+  assert.equal((await access()).app_password, false);
+  assert.equal((await login('')).status, 200);
 });
 
 await check('seg.', 'retorno de PA nasce desligado', async () => {
@@ -113,7 +163,7 @@ await check('seg.', 'retorno de PA nasce desligado', async () => {
 
 await check('FR-06', 'dois navegadores veem o mesmo estado', async () => {
   const a = await client(admin);
-  const b = await client(opToken);
+  const b = await client(await tokenOf(await login()));
   b.send({ type: 'patch', path: '/channels/2', value: { fader_db: -7.5, name: 'Pregador' } });
   const seen = (m) => m.type === 'state' && m.state.mixer.channels[2].fader_db === -7.5;
   await Promise.all([a.until(seen), b.until(seen)]);
@@ -183,55 +233,18 @@ await check('seg.', 'ciclo entre buses é recusado e o estado não muda', async 
 });
 
 
-// ── Acesso pela rede com senha ──
-const login = (password, name = 'Teste') =>
-  fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, name }) });
-const setPw = (role, password) =>
-  fetch(`${base}/api/password`, { method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ role, password }) });
-
-await check('FR-12', 'senha: sem senha definida, ninguém entra por senha', async () => {
-  assert.equal((await (await fetch(`${base}/api/health`)).json()).password_login, false);
-  assert.equal((await login('qualquer')).status, 401);
-});
-
-await check('FR-12', 'senha definida pelo admin dá sessão com o perfil certo', async () => {
-  assert.equal((await setPw('operator', '123')).status, 400, 'senha curta recusada');
-  assert.equal((await setPw('operator', 'culto-domingo')).status, 200);
-  assert.equal((await (await fetch(`${base}/api/health`)).json()).password_login, true);
-  assert.equal((await login('errada')).status, 401);
-  const r = await login('culto-domingo', 'Ana');
-  assert.equal(r.status, 200);
-  const { token, role } = await r.json();
-  assert.equal(role, 'operator');
-  const c = await client(token);
-  assert.equal(c.hello.role, 'operator');
-  assert.equal(c.hello.name, 'Ana');
-  c.ws.close();
-});
-
-await check('FR-12', 'trocar a senha encerra sessões abertas com a antiga', async () => {
-  const { token } = await (await login('culto-domingo', 'Bia')).json();
-  const c = await client(token);
-  const revoked = c.until((m) => m.type === 'revoked', 4000);
-  assert.equal((await setPw('operator', 'culto-noite')).status, 200);
-  await revoked;
-  assert.equal((await fetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
-  assert.equal((await login('culto-domingo')).status, 401);
-  assert.equal((await login('culto-noite')).status, 200);
-});
-
-await check('FR-12', 'senha definida na linha de comando vale sem reiniciar', async () => {
-  const r = spawnSync(bin, ['--data', data, 'password', '--role', 'monitor', '--value', 'so-o-fone'], { encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stderr);
-  await sleep(50);
-  const j = await (await login('so-o-fone')).json();
-  assert.equal(j.role, 'monitor');
-});
-
 await check('FR-12', 'muitas senhas erradas bloqueiam o IP por um tempo', async () => {
-  for (let i = 0; i < 5; i++) await login('chute-' + i);
-  const r = await login('culto-noite');
-  assert.equal(r.status, 429, 'bloqueado mesmo com a senha certa');
+  for (let i = 0; i < 5; i++) await login('chute-' + i, lanBase);
+  assert.equal((await login('culto-noite', lanBase)).status, 429, 'bloqueado mesmo com a senha certa');
+});
+
+await check('FR-12', 'desligar o acesso remoto derruba todos os remotos', async () => {
+  const c = await client(remoteToken, lanHost);
+  const revoked = c.until((m) => m.type === 'revoked', 4000);
+  assert.equal((await update(admin, { remote_password: null })).status, 200);
+  await revoked;
+  assert.equal((await access()).remote_enabled, false);
+  assert.equal((await update(admin, { remote_password: 'culto-noite' })).status, 200, 'religa para os próximos testes');
 });
 
 // FR-10: reinício restaura; fonte que sumiu fica visível como desconectada.
@@ -268,28 +281,6 @@ await check('FR-10', 'estado corrompido não derruba o servidor', async () => {
   assert.equal(h.engine.running, true);
 });
 
-
-await check('FR-12', 'abrir na rede sem senha é recusado; com senha, abre e mostra o endereço', async () => {
-  const fresh = mkdtempSync(join(tmpdir(), 'sona-e2e-net-'));
-  const refused = spawnSync(bin, ['--data', fresh, '--bind', '0.0.0.0:7398'], { encoding: 'utf8', timeout: 5000 });
-  assert.equal(refused.status, 2, 'recusou abrir na rede sem senha');
-  assert.match(refused.stdout + refused.stderr, /defina antes uma senha/);
-  spawnSync(bin, ['--data', fresh, 'password', '--value', 'abre-na-rede']);
-  const net = start(['--data', fresh, '--port', '7398']);
-  let h;
-  for (let i = 0; i < 50 && !h; i++) {
-    try {
-      h = await (await fetch('http://127.0.0.1:7398/api/health')).json();
-    } catch {
-      await sleep(100);
-    }
-  }
-  net.p.kill('SIGINT');
-  await new Promise((res) => net.p.on('exit', res));
-  assert.equal(h.password_login, true);
-  assert.ok(h.lan_urls.length > 0, 'mostra pelo menos um endereço da rede');
-  assert.ok(h.lan_urls.every((u) => u.endsWith(':7398') && !u.includes('127.0.0.1')), JSON.stringify(h.lan_urls));
-});
 
 srv.p.kill('SIGINT');
 await new Promise((r) => srv.p.on('exit', r));

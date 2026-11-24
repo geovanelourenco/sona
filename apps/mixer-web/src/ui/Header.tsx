@@ -1,12 +1,10 @@
-import { Headphones, SignOut, SlidersHorizontal, TreeStructure } from '@phosphor-icons/react';
+import { GearSix, Headphones, SignOut, SlidersHorizontal, TreeStructure } from '@phosphor-icons/react';
 import { useMixer } from '../lib/store';
 import { SonaLogo } from './Brand';
 import { Scenes } from './Scenes';
 import { cx } from './kit';
 
 export type View = 'mesa' | 'rotas';
-
-const ROLE_LABEL = { admin: 'Admin', operator: 'Operador', monitor: 'Só fone' } as const;
 
 function EngineBadge() {
   const e = useMixer((s) => s.engine);
@@ -30,9 +28,8 @@ function EngineBadge() {
   );
 }
 
-export function Header({ view, setView, onLogout }: { view: View; setView: (v: View) => void; onLogout: () => void }) {
+export function Header({ view, setView, onSettings, onLogout }: { view: View; setView: (v: View) => void; onSettings: () => void; onLogout?: () => void }) {
   const st = useMixer((s) => s.state);
-  const role = useMixer((s) => s.role);
   const name = useMixer((s) => s.name);
   const myMonitor = useMixer((s) => s.myMonitor);
   const setMyMonitor = useMixer((s) => s.setMyMonitor);
@@ -78,11 +75,16 @@ export function Header({ view, setView, onLogout }: { view: View; setView: (v: V
         </select>
       </label>
       <span className="hidden rounded-full border border-line px-2.5 py-1 text-[11.5px] font-semibold text-subtle sm:inline">
-        {name} · {role ? ROLE_LABEL[role] : ''}
+        {name}
       </span>
-      <button type="button" aria-label="Sair" onClick={onLogout} className="grid h-8 w-8 place-items-center rounded-lg text-subtle hover:bg-panel-2 hover:text-text">
-        <SignOut size={16} weight="bold" />
+      <button type="button" aria-label="Configurações" title="Configurações (acesso e senhas)" onClick={onSettings} className="grid h-8 w-8 place-items-center rounded-lg text-subtle hover:bg-panel-2 hover:text-text">
+        <GearSix size={17} weight="bold" />
       </button>
+      {onLogout && (
+        <button type="button" aria-label="Sair" title="Sair" onClick={onLogout} className="grid h-8 w-8 place-items-center rounded-lg text-subtle hover:bg-panel-2 hover:text-text">
+          <SignOut size={16} weight="bold" />
+        </button>
+      )}
     </header>
   );
 }

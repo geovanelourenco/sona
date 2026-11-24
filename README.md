@@ -19,10 +19,12 @@ O Sona é independente. A integração com o [Lumo](https://github.com/geovanelo
   buses independentes, subgrupos, limitador de bus e solo PFL/AFL por operador.
 - Grafo validado: ciclo entre buses é recusado; retorno de PA nasce desligado;
   aviso de laço quando um canal da mesa volta para a mesma mesa.
-- Servidor com controle HTTP + WebSocket, perfis (admin, operador, só fone),
-  cenas, persistência atômica com migração e medidores a 20 Hz.
+- Servidor com controle HTTP + WebSocket, acesso local direto (ou com senha do
+  app) e acesso remoto por senha, cenas, persistência atômica com migração e
+  medidores a 20 Hz.
 - Console web: faders, medidores, camadas de envio ("sends on faders"),
-  processamento com curva de EQ arrastável, matriz de roteamento, cenas e acessos.
+  processamento com curva de EQ arrastável, matriz de roteamento, cenas,
+  primeira configuração e Configurações de acesso.
 - Dispositivos reais via cpal (ASIO/WASAPI/ALSA/JACK/PipeWire/CoreAudio):
   listagem e caminho duplex compilados; duplex só exercitado no ALSA "null".
 
@@ -36,27 +38,24 @@ cd apps/mixer-web && npm ci && npm run build && cd ../..
 cargo run --release -p sona-server          # http://127.0.0.1:7340
 ```
 
-No primeiro início o servidor mostra no log um link com o código de admin, que
-vale nesta máquina.
+Ao abrir o console neste computador pela primeira vez, o Sona pede duas
+escolhas opcionais (dá para mudar depois em **Configurações**, no ícone de
+engrenagem):
 
-### Acesso pela rede (outros computadores e tablets)
+- **Acesso de outros computadores:** cria a senha de acesso remoto. Notebooks e
+  tablets da rede abrem o endereço mostrado (ex.: `http://192.168.0.10:7340`) e
+  entram com ela. Sem essa senha, o servidor recusa qualquer pedido que não venha
+  deste computador.
+- **Senha neste computador:** o console passa a pedir a senha do app aqui também.
+  Sem ela, abre direto.
 
-Defina uma senha na máquina do servidor e reinicie. Com senha, o servidor abre
-na rede sozinho e mostra no log o endereço (ex.: `http://192.168.0.10:7340`):
+Não há perfis: quem entra tem acesso total. Trocar uma senha encerra as sessões
+abertas com a antiga (menos a de quem trocou); desligar o acesso remoto tira
+todos os computadores da rede. Cinco senhas erradas seguidas bloqueiam o IP por
+60 s. Só LAN: não há HTTPS ainda; não exponha à internet. No Windows, aceite o
+aviso do firewall na primeira vez.
 
-```bash
-cargo run --release -p sona-server -- password                   # senha de operador (pede no terminal)
-cargo run --release -p sona-server -- password --role admin      # senha de admin (opcional)
-cargo run --release -p sona-server -- password --role monitor    # senha só do fone (opcional)
-cargo run --release -p sona-server -- password --clear           # apaga
-```
-
-Quem abre o endereço entra com nome e senha; o perfil vem da senha usada. O
-admin também troca as senhas no console (Roteamento → Acesso pela rede). Trocar
-uma senha vale na hora, sem reiniciar, e encerra as sessões abertas com a
-antiga. Cinco senhas erradas seguidas bloqueiam o IP por 60 s. Sem senha o
-servidor se recusa a abrir na rede. Só LAN: não há HTTPS ainda; não exponha à
-internet. No Windows, aceite o aviso do firewall na primeira vez.
+Use `--open` para abrir o console no navegador ao ligar (modo app).
 
 Outros comandos:
 
@@ -64,7 +63,8 @@ Outros comandos:
 cargo run --release -p sona-server -- devices                  # dispositivos, canais e taxas (FR-01)
 cargo run --release -p sona-server -- --device "Ui24R"         # dispositivo real (não validado)
 cargo run --release -p sona-server -- bench                    # custo do motor por bloco
-cargo run --release -p sona-server -- token --name Ana --role operator
+cargo run --release -p sona-server -- password --app --clear      # esqueceu a senha do app
+cargo run --release -p sona-server -- password --remote --clear   # desliga o acesso remoto
 ```
 
 Desenvolvimento da interface com recarga: `npm run dev` em `apps/mixer-web`

@@ -18,7 +18,6 @@ export function OnAir({ on }: { on: boolean }) {
 
 export function BusStrip({ index, bus, active, onLayer }: { index: number; bus: BusConfig; active: boolean; onLayer: () => void }) {
   const st = useMixer((s) => s.state)!;
-  const role = useMixer((s) => s.role);
   const patch = useMixer((s) => s.patch);
   const toast = useMixer((s) => s.toast);
   const pickL = useMemo(() => () => meterData.bus[index]?.[0] ?? 0, [index]);
@@ -26,7 +25,6 @@ export function BusStrip({ index, bus, active, onLayer }: { index: number; bus: 
   const outs = bus.outputs.map((o) => st.io.outputs[o.left]?.name.replace(/ L$/, '') ?? '?').join(', ') || 'sem saída';
   const live = bus.enabled && !bus.mute && bus.outputs.length > 0;
   const isMon = bus.kind === 'monitor';
-  const canMix = role !== 'monitor';
 
   return (
     <div className={cx('flex w-[92px] shrink-0 flex-col items-center gap-1.5 rounded-xl border px-1.5 pb-2 pt-1.5', active ? 'lm-selected border-transparent' : 'border-line/60 bg-panel/80')}>
@@ -44,8 +42,7 @@ export function BusStrip({ index, bus, active, onLayer }: { index: number; bus: 
           on={bus.enabled}
           tone="warn"
           className="w-full"
-          disabled={role !== 'admin'}
-          title={role === 'admin' ? 'Liga o retorno para a mesa física. Confira se o canal da mesa não volta para o mesmo retorno.' : 'Só o admin liga o retorno'}
+          title="Liga o retorno para a mesa física. Confira se o canal da mesa não volta para o mesmo retorno."
           onClick={() => {
             if (!bus.enabled && !confirm(`Ligar "${bus.name}"? O áudio passa a voltar para a mesa física. Confira se não há realimentação.`)) return;
             patch(`/buses/${index}`, { enabled: !bus.enabled });
@@ -69,12 +66,12 @@ export function BusStrip({ index, bus, active, onLayer }: { index: number; bus: 
         <span className="h-7" />
       )}
       <div className="flex min-h-0 w-full flex-1 justify-center gap-1">
-        <Fader db={bus.fader_db} label={`Master ${bus.name}`} disabled={!canMix} onChange={(v) => patch(`/buses/${index}`, { fader_db: v })} />
+        <Fader db={bus.fader_db} label={`Master ${bus.name}`} onChange={(v) => patch(`/buses/${index}`, { fader_db: v })} />
         <MeterBar pick={pickL} />
         <MeterBar pick={pickR} />
       </div>
       <span className="font-mono text-[11px] text-hi">{fmtDb(bus.fader_db)}</span>
-      <Toggle on={bus.mute} tone="warn" className="w-full" disabled={!canMix} onClick={() => patch(`/buses/${index}`, { mute: !bus.mute })}>
+      <Toggle on={bus.mute} tone="warn" className="w-full" onClick={() => patch(`/buses/${index}`, { mute: !bus.mute })}>
         MUTE
       </Toggle>
     </div>

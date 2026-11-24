@@ -53,11 +53,9 @@ function DynLights({ index, ch }: { index: number; ch: ChannelConfig }) {
 
 export function Strip({ index, ch, layer, selected, onSelect }: { index: number; ch: ChannelConfig; layer: number | null; selected: boolean; onSelect: () => void }) {
   const st = useMixer((s) => s.state)!;
-  const role = useMixer((s) => s.role);
   const patch = useMixer((s) => s.patch);
   const myMonitor = useMixer((s) => s.myMonitor);
   const [editing, setEditing] = useState(false);
-  const canMix = role !== 'monitor';
   const src = sourceLabel(ch, st);
   const pick = useMemo(() => () => meterData.ch[index] ?? 0, [index]);
 
@@ -75,7 +73,7 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
         onSelect();
       }}
     >
-      <div className="flex h-9 w-full flex-col items-center justify-center" onDoubleClick={() => canMix && setEditing(true)}>
+      <div className="flex h-9 w-full flex-col items-center justify-center" onDoubleClick={() => setEditing(true)}>
         <span className="font-mono text-[10px] text-muted">{index + 1}</span>
         {editing ? (
           <input
@@ -109,7 +107,7 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
         min={-100}
         max={100}
         value={Math.round(ch.pan * 100)}
-        disabled={!canMix}
+       
         onChange={(e) => {
           const v = Number(e.target.value);
           patch(`/channels/${index}`, { pan: Math.abs(v) < 4 ? 0 : v / 100 });
@@ -124,7 +122,7 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
           on={!!send?.pre_fader}
           tone="accent"
           className="w-full"
-          disabled={!canMix}
+         
           onClick={() => patch(`/channels/${index}`, { sends: withSend(ch, layer!, { pre_fader: !send?.pre_fader }) })}
           title="Pré-fader: o envio não segue o fader do canal"
         >
@@ -152,7 +150,7 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
           db={faderDb}
           label={bus ? `Envio de ${ch.name} para ${bus.name}` : `Fader ${ch.name}`}
           tint={bus ? 'cyan' : 'accent'}
-          disabled={!canMix}
+         
           scale={false}
           onChange={(v) => {
             if (layer === null) patch(`/channels/${index}`, { fader_db: v });
@@ -165,11 +163,11 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
       <span className={cx('font-mono text-[11px]', faderDb > 0 ? 'text-warn-light' : 'text-hi')}>{fmtDb(faderDb)}</span>
 
       {bus ? (
-        <Toggle on={!!send?.enabled} tone="ok" className="w-full" disabled={!canMix} onClick={() => patch(`/channels/${index}`, { sends: withSend(ch, layer!, { enabled: !send?.enabled }) })}>
+        <Toggle on={!!send?.enabled} tone="ok" className="w-full" onClick={() => patch(`/channels/${index}`, { sends: withSend(ch, layer!, { enabled: !send?.enabled }) })}>
           {send?.enabled ? 'ON' : 'OFF'}
         </Toggle>
       ) : (
-        <Toggle on={ch.mute} tone="warn" className="w-full" disabled={!canMix} onClick={() => patch(`/channels/${index}`, { mute: !ch.mute })}>
+        <Toggle on={ch.mute} tone="warn" className="w-full" onClick={() => patch(`/channels/${index}`, { mute: !ch.mute })}>
           MUTE
         </Toggle>
       )}

@@ -12,7 +12,7 @@ Máquina: Intel Xeon @ 2,30 GHz, 4 vCPU, Linux 6.18, sem prioridade de tempo rea
 |---|---|
 | `cargo test -p sona-core` (dsp, routing, realtime) | 29/29 |
 | `npm test` em `apps/mixer-web` | 6/6 |
-| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 16/16 — ver `acceptance-last-run.json` |
+| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 17/17 — ver `acceptance-last-run.json` |
 | `cargo test -p sona-server` (senhas e sessões) | 4/4 |
 
 ### Custo do motor (`sona-server bench --seconds 20`, release)
@@ -56,15 +56,14 @@ funciona.
 
 `screenshots/`: entrada (`login.png`), mesa (`mesa.png`), processamento do canal
 (`detalhe.png`), camada de envios do retorno de PA (`camada-pa.png`) e
-roteamento (`rotas.png`).
+roteamento (`rotas.png`), primeira configuração (`primeira-configuracao.png`) e Configurações (`configuracoes.png`).
 
-## Acesso pela rede com senha (2026-11-24)
+## Acesso local e remoto (2026-11-24)
 
-Servidor com senha, sem `--bind`: escutou em `0.0.0.0:7340` e mostrou
-`http://192.0.2.2:7340` no log. Pelo IP da rede: login com senha certa e errada
-(log registra o IP), `/api/state` e WebSocket (Node e curl: upgrade 101) ok.
-Telas `screenshots/login-senha.png` e `screenshots/rede.png`.
-
-Limite do ambiente: o Chromium deste container recebe 403 no WebSocket para IPs
-que não são loopback (a camada de rede do sandbox intercepta), por isso as telas
-foram tiradas por 127.0.0.1. Repetir de outro computador na rede da igreja.
+O e2e faz pedidos pelo IP de rede do próprio container (`http://192.0.2.2:7340`),
+que o servidor vê como outro computador: remoto desligado recusa (403) e não
+aceita token local; com senha, entra e o WebSocket funciona; troca de senha e
+desligamento derrubam a sessão remota aberta. Telas: `primeira-configuracao.png`
+e `configuracoes.png` (tiradas por 127.0.0.1: o Chromium deste container recebe
+403 da camada de rede do sandbox no WebSocket para IPs que não são loopback;
+Node e curl não têm esse problema). Repetir de outro computador na rede da igreja.

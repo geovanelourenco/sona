@@ -3,7 +3,6 @@
 export type SourceMap = { kind: 'none' } | { kind: 'mono'; input: number } | { kind: 'stereo'; left: number; right: number };
 export type EqBandKind = 'peaking' | 'low_shelf' | 'high_shelf';
 export type BusKind = 'broadcast' | 'pa_return' | 'recording' | 'monitor' | 'group';
-export type Role = 'admin' | 'operator' | 'monitor';
 
 export interface EqBand { enabled: boolean; kind: EqBandKind; freq_hz: number; gain_db: number; q: number }
 export interface EqConfig { enabled: boolean; high_pass_enabled: boolean; high_pass_hz: number; bands: EqBand[] }

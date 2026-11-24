@@ -1,48 +1,54 @@
-//! Autenticação: senha por perfil (para o acesso pela rede) e tokens.
+//! Acesso ao Sona. Não há perfis: quem entra tem acesso total.
 //!
-//! - Senha: definida na máquina do servidor (`sona-server password`) ou por um
-//!   admin no console. Fica só como hash Argon2id com salt no disco.
-//! - Token: o navegador recebe um token de sessão depois de entrar com a senha.
-//!   O token de admin criado no primeiro início continua valendo na máquina.
-//!   Trocar ou apagar a senha de um perfil derruba as sessões abertas com ela.
+//! - Neste computador (loopback): entra direto, ou com a "senha do app" se ela
+//!   estiver definida.
+//! - Pela rede: só com a "senha de acesso remoto". Sem ela, o acesso remoto fica
+//!   desligado e o servidor recusa pedidos que não vêm deste computador.
 //!
-//! O arquivo é relido quando muda no disco, então a senha trocada pela linha de
-//! comando vale sem reiniciar o servidor.
+//! Senhas ficam como hash Argon2id com salt. Depois de entrar, o navegador usa um
+//! token de sessão (hash SHA-256 no disco). Trocar ou apagar uma senha encerra as
+//! sessões abertas com ela, menos a de quem fez a troca (tirar a senha do app
+//! não encerra nada). O arquivo é relido
+//! quando muda, então a recuperação pela linha de comando vale sem reiniciar.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Role {
-    Admin,
-    Operator,
-    Monitor,
-}
-
-impl Role {
-    pub const ALL: [Role; 3] = [Role::Admin, Role::Operator, Role::Monitor];
+pub enum Scope {
+    /// Sessão aberta neste computador.
+    Local,
+    /// Sessão aberta de outro computador da rede.
+    Remote,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenEntry {
     pub name: String,
-    pub role: Role,
+    pub scope: Scope,
     pub hash: String,
-    /// Sessão aberta com senha: cai quando a senha do perfil muda.
-    #[serde(default)]
-    pub via_password: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AuthFile {
     pub tokens: Vec<TokenEntry>,
-    /// Hash Argon2id por perfil: "argon2id$<salt hex>$<hash hex>".
-    #[serde(default)]
-    pub passwords: BTreeMap<Role, String>,
+    /// Hash "argon2id$<salt>$<hash>" da senha do app (neste computador).
+    pub app_password: Option<String>,
+    /// Hash da senha de acesso remoto. Ausente = acesso remoto desligado.
+    pub remote_password: Option<String>,
+    /// A tela de primeira configuração já foi concluída.
+    pub setup_done: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Status {
+    pub app_password: bool,
+    pub remote_enabled: bool,
+    pub setup_done: bool,
 }
 
 pub struct Auth {
@@ -52,6 +58,8 @@ pub struct Auth {
 }
 
 pub const MIN_PASSWORD: usize = 6;
+/// Sessões guardadas. As mais antigas saem primeiro.
+const MAX_TOKENS: usize = 100;
 
 pub fn new_token() -> String {
     let mut b = [0u8; 18];
@@ -92,15 +100,9 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 impl Auth {
-    /// Carrega o arquivo. Devolve o token de admin quando acabou de criar.
-    pub fn load(path: &Path) -> (Auth, Option<String>) {
+    pub fn load(path: &Path) -> Auth {
         let file: AuthFile = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let mut auth = Auth { file, path: path.to_path_buf(), mtime: mtime(path) };
-        if auth.file.tokens.iter().any(|t| t.role == Role::Admin && !t.via_password) {
-            return (auth, None);
-        }
-        let token = auth.issue("admin", Role::Admin, false);
-        (auth, Some(token))
+        Auth { file, path: path.to_path_buf(), mtime: mtime(path) }
     }
 
     /// Relê o arquivo se outro processo (a linha de comando) mudou.
@@ -114,55 +116,74 @@ impl Auth {
         }
     }
 
-    pub fn issue(&mut self, name: &str, role: Role, via_password: bool) -> String {
+    pub fn status(&mut self) -> Status {
+        self.refresh();
+        Status {
+            app_password: self.file.app_password.is_some(),
+            remote_enabled: self.file.remote_password.is_some(),
+            setup_done: self.file.setup_done,
+        }
+    }
+
+    /// Confere a senha do escopo. Local sem senha do app: entra direto.
+    /// Remoto sem senha remota: nunca entra.
+    pub fn check(&mut self, scope: Scope, password: &str) -> bool {
+        self.refresh();
+        match scope {
+            Scope::Local => self.file.app_password.as_deref().is_none_or(|h| verify_password(password, h)),
+            Scope::Remote => self.file.remote_password.as_deref().is_some_and(|h| verify_password(password, h)),
+        }
+    }
+
+    pub fn issue(&mut self, name: &str, scope: Scope) -> String {
         self.refresh();
         let token = new_token();
-        self.file.tokens.push(TokenEntry { name: name.into(), role, hash: hash_token(&token), via_password });
+        self.file.tokens.push(TokenEntry { name: name.into(), scope, hash: hash_token(&token) });
+        let extra = self.file.tokens.len().saturating_sub(MAX_TOKENS);
+        self.file.tokens.drain(..extra);
         self.persist();
         token
     }
 
-    pub fn verify(&mut self, token: &str) -> Option<(String, Role)> {
+    pub fn verify(&mut self, token: &str) -> Option<(String, Scope)> {
         self.refresh();
         let h = hash_token(token);
-        self.file.tokens.iter().find(|t| eq_ct(t.hash.as_bytes(), h.as_bytes())).map(|t| (t.name.clone(), t.role))
+        self.file.tokens.iter().find(|t| eq_ct(t.hash.as_bytes(), h.as_bytes())).map(|t| (t.name.clone(), t.scope))
     }
 
-    /// Perfil da senha, testando do mais alto para o mais baixo.
-    pub fn check_password(&mut self, password: &str) -> Option<Role> {
+    /// Define (Some) ou apaga (None) a senha do escopo. Criar ou trocar encerra
+    /// as sessões desse escopo, menos a de `keep` (quem fez a troca). Desligar o
+    /// acesso remoto encerra todas as remotas.
+    pub fn set_password(&mut self, scope: Scope, password: Option<&str>, keep: Option<&str>) -> Result<(), String> {
         self.refresh();
-        Role::ALL.into_iter().find(|r| self.file.passwords.get(r).is_some_and(|h| verify_password(password, h)))
-    }
-
-    /// Define (Some) ou apaga (None) a senha de um perfil. Derruba as sessões
-    /// abertas com a senha antiga desse perfil.
-    pub fn set_password(&mut self, role: Role, password: Option<&str>) -> Result<(), String> {
-        self.refresh();
-        match password {
-            Some(p) if p.chars().count() < MIN_PASSWORD => return Err(format!("A senha precisa de pelo menos {MIN_PASSWORD} caracteres.")),
-            Some(p) => {
-                if let Some((other, _)) = self.file.passwords.iter().find(|(r, h)| **r != role && verify_password(p, h)) {
-                    return Err(format!("Essa senha já é a do perfil {other:?}. Use senhas diferentes por perfil."));
-                }
-                self.file.passwords.insert(role, hash_password(p));
-            }
-            None => {
-                self.file.passwords.remove(&role);
+        if let Some(p) = password {
+            if p.chars().count() < MIN_PASSWORD {
+                return Err(format!("A senha precisa de pelo menos {MIN_PASSWORD} caracteres."));
             }
         }
-        self.file.tokens.retain(|t| !(t.via_password && t.role == role));
+        let hash = password.map(hash_password);
+        match scope {
+            Scope::Local => self.file.app_password = hash,
+            Scope::Remote => self.file.remote_password = hash,
+        }
+        // Desligar o acesso remoto derruba todas as sessões remotas, inclusive a
+        // de quem desligou.
+        // Tirar a senha do app não encerra sessões (nada fica menos protegido do
+        // que já estava aberto).
+        let keep = if scope == Scope::Remote && password.is_none() { None } else { keep.map(hash_token) };
+        if !(scope == Scope::Local && password.is_none()) {
+            self.file.tokens.retain(|t| t.scope != scope || keep.as_deref() == Some(t.hash.as_str()));
+        }
         self.persist();
         Ok(())
     }
 
-    pub fn has_password(&mut self) -> bool {
+    pub fn finish_setup(&mut self) {
         self.refresh();
-        !self.file.passwords.is_empty()
-    }
-
-    pub fn password_roles(&mut self) -> Vec<Role> {
-        self.refresh();
-        self.file.passwords.keys().copied().collect()
+        if !self.file.setup_done {
+            self.file.setup_done = true;
+            self.persist();
+        }
     }
 
     fn persist(&mut self) {
@@ -185,42 +206,52 @@ mod tests {
     }
 
     #[test]
-    fn senha_confere_e_nao_fica_em_claro() {
+    fn sem_senha_do_app_entra_direto_neste_computador() {
+        let mut a = Auth::load(&tmp());
+        assert!(a.check(Scope::Local, ""));
+        assert!(!a.check(Scope::Remote, ""), "remoto desligado sem senha remota");
+        assert!(!a.status().setup_done);
+    }
+
+    #[test]
+    fn senhas_conferem_e_nao_ficam_em_claro() {
         let p = tmp();
-        let (mut a, _) = Auth::load(&p);
-        a.set_password(Role::Operator, Some("louvor2026")).unwrap();
-        assert_eq!(a.check_password("louvor2026"), Some(Role::Operator));
-        assert_eq!(a.check_password("louvor2025"), None);
-        assert!(!std::fs::read_to_string(&p).unwrap().contains("louvor2026"));
+        let mut a = Auth::load(&p);
+        a.set_password(Scope::Remote, Some("louvor2026"), None).unwrap();
+        a.set_password(Scope::Local, Some("so-aqui-123"), None).unwrap();
+        assert!(a.check(Scope::Remote, "louvor2026"));
+        assert!(!a.check(Scope::Remote, "so-aqui-123"), "cada senha vale no seu escopo");
+        assert!(a.check(Scope::Local, "so-aqui-123"));
+        assert!(!a.check(Scope::Local, ""));
+        let disk = std::fs::read_to_string(&p).unwrap();
+        assert!(!disk.contains("louvor2026") && !disk.contains("so-aqui-123"));
+        assert!(a.set_password(Scope::Remote, Some("123"), None).is_err());
     }
 
     #[test]
-    fn senha_curta_ou_repetida_e_recusada() {
-        let (mut a, _) = Auth::load(&tmp());
-        assert!(a.set_password(Role::Operator, Some("123")).is_err());
-        a.set_password(Role::Admin, Some("segredo-admin")).unwrap();
-        assert!(a.set_password(Role::Operator, Some("segredo-admin")).is_err());
-    }
-
-    #[test]
-    fn trocar_senha_derruba_sessoes_do_perfil() {
-        let (mut a, admin) = Auth::load(&tmp());
-        a.set_password(Role::Operator, Some("primeira")).unwrap();
-        let s = a.issue("Ana", Role::Operator, true);
-        assert!(a.verify(&s).is_some());
-        a.set_password(Role::Operator, Some("segunda")).unwrap();
-        assert!(a.verify(&s).is_none(), "sessão antiga caiu");
-        assert!(a.verify(&admin.unwrap()).is_some(), "token de admin da máquina continua");
+    fn trocar_senha_encerra_sessoes_menos_a_de_quem_trocou() {
+        let mut a = Auth::load(&tmp());
+        a.set_password(Scope::Remote, Some("primeira"), None).unwrap();
+        let eu = a.issue("Ana", Scope::Remote);
+        let outro = a.issue("Bia", Scope::Remote);
+        let local = a.issue("Este computador", Scope::Local);
+        a.set_password(Scope::Remote, Some("segunda"), Some(&eu)).unwrap();
+        assert!(a.verify(&eu).is_some());
+        assert!(a.verify(&outro).is_none());
+        assert!(a.verify(&local).is_some(), "sessão local não depende da senha remota");
+        a.set_password(Scope::Remote, None, None).unwrap();
+        assert!(!a.status().remote_enabled);
+        assert!(a.verify(&eu).is_none(), "desligar o remoto derruba todas as sessões remotas");
     }
 
     #[test]
     fn mudanca_feita_por_outro_processo_vale_sem_reiniciar() {
         let p = tmp();
-        let (mut servidor, _) = Auth::load(&p);
-        assert!(!servidor.has_password());
+        let mut servidor = Auth::load(&p);
+        servidor.set_password(Scope::Local, Some("esqueci-essa"), None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let (mut cli, _) = Auth::load(&p);
-        cli.set_password(Role::Operator, Some("pela-linha")).unwrap();
-        assert_eq!(servidor.check_password("pela-linha"), Some(Role::Operator));
+        let mut cli = Auth::load(&p);
+        cli.set_password(Scope::Local, None, None).unwrap();
+        assert!(servidor.check(Scope::Local, ""), "recuperação pela linha de comando");
     }
 }
