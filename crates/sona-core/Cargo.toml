@@ -1,0 +1,13 @@
+[package]
+name = "sona-core"
+description = "Sona: DSP e grafo do mixer. Sem I/O, sem rede, sem UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rtrb = "0.3"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

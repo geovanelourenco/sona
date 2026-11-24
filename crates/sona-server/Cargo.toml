@@ -1,0 +1,35 @@
+[package]
+name = "sona-server"
+description = "Sona: servidor de áudio (motor, dispositivos, controle HTTP/WebSocket, persistência)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sona-server"
+path = "src/main.rs"
+
+[features]
+default = ["hw"]
+# Dispositivos reais via cpal (ASIO/WASAPI/ALSA/JACK). No Linux exige libasound2-dev.
+hw = ["dep:cpal"]
+
+[dependencies]
+sona-core = { path = "../sona-core" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"] }
+tower-http = { version = "0.7", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+getrandom = "0.4"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+rtrb = "0.3"
+cpal = { version = "0.18", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"

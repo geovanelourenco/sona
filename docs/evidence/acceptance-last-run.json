@@ -1,0 +1,56 @@
+{
+  "at": "2026-11-24T22:25:20.178Z",
+  "platform": "linux",
+  "results": [
+    {
+      "id": "FR-12",
+      "name": "recusa controle e áudio sem token válido",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "perfis: operador não muda roteamento; monitor só mexe no próprio fone",
+      "ok": true
+    },
+    {
+      "id": "seg.",
+      "name": "retorno de PA nasce desligado",
+      "ok": true
+    },
+    {
+      "id": "FR-06",
+      "name": "dois navegadores veem o mesmo estado",
+      "ok": true
+    },
+    {
+      "id": "FR-06",
+      "name": "sem nenhum navegador, o áudio continua",
+      "ok": true
+    },
+    {
+      "id": "FR-07",
+      "name": "PFL do operador A só muda o fone dele",
+      "ok": true
+    },
+    {
+      "id": "FR-10",
+      "name": "cena salva",
+      "ok": true
+    },
+    {
+      "id": "seg.",
+      "name": "ciclo entre buses é recusado e o estado não muda",
+      "ok": true
+    },
+    {
+      "id": "FR-10",
+      "name": "reinício restaura mix, cenas e mostra a entrada ausente",
+      "ok": true
+    },
+    {
+      "id": "FR-10",
+      "name": "estado corrompido não derruba o servidor",
+      "ok": true
+    }
+  ]
+}
