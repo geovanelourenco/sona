@@ -1,7 +1,7 @@
 // Teste de aceitação do servidor real (binário release, dispositivo simulado).
 // Cobre FR-06, FR-07, FR-10, FR-12 e a regra "PA return nasce desligado".
 // Uso: cargo build --release -p sona-server && node tests/e2e/acceptance.mjs
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -16,8 +16,8 @@ const base = `http://127.0.0.1:${PORT}`;
 const results = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function start() {
-  const p = spawn(bin, ['--data', data, '--bind', `127.0.0.1:${PORT}`], { env: { ...process.env, RUST_LOG: 'warn,sona_server=info', NO_COLOR: '1' } });
+function start(args = ['--data', data, '--bind', `127.0.0.1:${PORT}`]) {
+  const p = spawn(bin, args, { env: { ...process.env, RUST_LOG: 'warn,sona_server=info', NO_COLOR: '1' } });
   let log = '';
   p.stdout.on('data', (d) => (log += d));
   p.stderr.on('data', (d) => (log += d));
@@ -182,6 +182,58 @@ await check('seg.', 'ciclo entre buses é recusado e o estado não muda', async 
   a.ws.close();
 });
 
+
+// ── Acesso pela rede com senha ──
+const login = (password, name = 'Teste') =>
+  fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password, name }) });
+const setPw = (role, password) =>
+  fetch(`${base}/api/password`, { method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ role, password }) });
+
+await check('FR-12', 'senha: sem senha definida, ninguém entra por senha', async () => {
+  assert.equal((await (await fetch(`${base}/api/health`)).json()).password_login, false);
+  assert.equal((await login('qualquer')).status, 401);
+});
+
+await check('FR-12', 'senha definida pelo admin dá sessão com o perfil certo', async () => {
+  assert.equal((await setPw('operator', '123')).status, 400, 'senha curta recusada');
+  assert.equal((await setPw('operator', 'culto-domingo')).status, 200);
+  assert.equal((await (await fetch(`${base}/api/health`)).json()).password_login, true);
+  assert.equal((await login('errada')).status, 401);
+  const r = await login('culto-domingo', 'Ana');
+  assert.equal(r.status, 200);
+  const { token, role } = await r.json();
+  assert.equal(role, 'operator');
+  const c = await client(token);
+  assert.equal(c.hello.role, 'operator');
+  assert.equal(c.hello.name, 'Ana');
+  c.ws.close();
+});
+
+await check('FR-12', 'trocar a senha encerra sessões abertas com a antiga', async () => {
+  const { token } = await (await login('culto-domingo', 'Bia')).json();
+  const c = await client(token);
+  const revoked = c.until((m) => m.type === 'revoked', 4000);
+  assert.equal((await setPw('operator', 'culto-noite')).status, 200);
+  await revoked;
+  assert.equal((await fetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
+  assert.equal((await login('culto-domingo')).status, 401);
+  assert.equal((await login('culto-noite')).status, 200);
+});
+
+await check('FR-12', 'senha definida na linha de comando vale sem reiniciar', async () => {
+  const r = spawnSync(bin, ['--data', data, 'password', '--role', 'monitor', '--value', 'so-o-fone'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  await sleep(50);
+  const j = await (await login('so-o-fone')).json();
+  assert.equal(j.role, 'monitor');
+});
+
+await check('FR-12', 'muitas senhas erradas bloqueiam o IP por um tempo', async () => {
+  for (let i = 0; i < 5; i++) await login('chute-' + i);
+  const r = await login('culto-noite');
+  assert.equal(r.status, 429, 'bloqueado mesmo com a senha certa');
+});
+
 // FR-10: reinício restaura; fonte que sumiu fica visível como desconectada.
 srv.p.kill('SIGINT');
 await new Promise((r) => srv.p.on('exit', r));
@@ -214,6 +266,29 @@ await check('FR-10', 'estado corrompido não derruba o servidor', async () => {
   srv = start();
   const h = await waitUp();
   assert.equal(h.engine.running, true);
+});
+
+
+await check('FR-12', 'abrir na rede sem senha é recusado; com senha, abre e mostra o endereço', async () => {
+  const fresh = mkdtempSync(join(tmpdir(), 'sona-e2e-net-'));
+  const refused = spawnSync(bin, ['--data', fresh, '--bind', '0.0.0.0:7398'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(refused.status, 2, 'recusou abrir na rede sem senha');
+  assert.match(refused.stdout + refused.stderr, /defina antes uma senha/);
+  spawnSync(bin, ['--data', fresh, 'password', '--value', 'abre-na-rede']);
+  const net = start(['--data', fresh, '--port', '7398']);
+  let h;
+  for (let i = 0; i < 50 && !h; i++) {
+    try {
+      h = await (await fetch('http://127.0.0.1:7398/api/health')).json();
+    } catch {
+      await sleep(100);
+    }
+  }
+  net.p.kill('SIGINT');
+  await new Promise((res) => net.p.on('exit', res));
+  assert.equal(h.password_login, true);
+  assert.ok(h.lan_urls.length > 0, 'mostra pelo menos um endereço da rede');
+  assert.ok(h.lan_urls.every((u) => u.endsWith(':7398') && !u.includes('127.0.0.1')), JSON.stringify(h.lan_urls));
 });
 
 srv.p.kill('SIGINT');

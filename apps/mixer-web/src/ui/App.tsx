@@ -20,6 +20,7 @@ export function App() {
   const connect = useMixer((s) => s.connect);
   const disconnect = useMixer((s) => s.disconnect);
   const toasts = useMixer((s) => s.toasts);
+  const loginNotice = useMixer((s) => s.loginNotice);
   const [view, setView] = useState<View>('mesa');
 
   useEffect(() => {
@@ -47,7 +48,7 @@ export function App() {
 
   let body;
   if (conn === 'idle' || conn === 'unauthorized') {
-    body = <Login onToken={login} error={conn === 'unauthorized' ? 'Código inválido ou revogado.' : undefined} />;
+    body = <Login onToken={login} error={conn === 'unauthorized' ? 'Acesso inválido ou encerrado. Entre de novo.' : (loginNotice ?? undefined)} />;
   } else if (!state) {
     body = (
       <main className="grid h-full place-items-center">

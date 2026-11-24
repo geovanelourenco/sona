@@ -36,8 +36,27 @@ cd apps/mixer-web && npm ci && npm run build && cd ../..
 cargo run --release -p sona-server          # http://127.0.0.1:7340
 ```
 
-No primeiro início o servidor mostra no log um link com o código de admin.
-Para a rede da igreja: `--bind 0.0.0.0:7340` (só em LAN; não exponha à internet).
+No primeiro início o servidor mostra no log um link com o código de admin, que
+vale nesta máquina.
+
+### Acesso pela rede (outros computadores e tablets)
+
+Defina uma senha na máquina do servidor e reinicie. Com senha, o servidor abre
+na rede sozinho e mostra no log o endereço (ex.: `http://192.168.0.10:7340`):
+
+```bash
+cargo run --release -p sona-server -- password                   # senha de operador (pede no terminal)
+cargo run --release -p sona-server -- password --role admin      # senha de admin (opcional)
+cargo run --release -p sona-server -- password --role monitor    # senha só do fone (opcional)
+cargo run --release -p sona-server -- password --clear           # apaga
+```
+
+Quem abre o endereço entra com nome e senha; o perfil vem da senha usada. O
+admin também troca as senhas no console (Roteamento → Acesso pela rede). Trocar
+uma senha vale na hora, sem reiniciar, e encerra as sessões abertas com a
+antiga. Cinco senhas erradas seguidas bloqueiam o IP por 60 s. Sem senha o
+servidor se recusa a abrir na rede. Só LAN: não há HTTPS ainda; não exponha à
+internet. No Windows, aceite o aviso do firewall na primeira vez.
 
 Outros comandos:
 

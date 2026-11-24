@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-24T22:25:20.178Z",
+  "at": "2026-11-24T22:50:06.295Z",
   "platform": "linux",
   "results": [
     {
@@ -43,6 +43,31 @@
       "ok": true
     },
     {
+      "id": "FR-12",
+      "name": "senha: sem senha definida, ninguém entra por senha",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "senha definida pelo admin dá sessão com o perfil certo",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "trocar a senha encerra sessões abertas com a antiga",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "senha definida na linha de comando vale sem reiniciar",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "muitas senhas erradas bloqueiam o IP por um tempo",
+      "ok": true
+    },
+    {
       "id": "FR-10",
       "name": "reinício restaura mix, cenas e mostra a entrada ausente",
       "ok": true
@@ -50,6 +75,11 @@
     {
       "id": "FR-10",
       "name": "estado corrompido não derruba o servidor",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "abrir na rede sem senha é recusado; com senha, abre e mostra o endereço",
       "ok": true
     }
   ]

@@ -26,9 +26,12 @@ struct ServeArgs {
     /// Pasta de dados (estado, cenas, tokens).
     #[arg(long, default_value = "data")]
     data: PathBuf,
-    /// Endereço do controle. Padrão só local; use 0.0.0.0:7340 para a rede da igreja.
-    #[arg(long, default_value = "127.0.0.1:7340")]
-    bind: String,
+    /// Endereço do controle. Padrão: rede (0.0.0.0) se houver senha configurada,
+    /// senão só esta máquina (127.0.0.1). Abrir para a rede exige senha.
+    #[arg(long)]
+    bind: Option<String>,
+    #[arg(long, default_value_t = 7340)]
+    port: u16,
     /// "sim" para o dispositivo simulado, ou o nome do dispositivo de áudio.
     #[arg(long, default_value = "sim")]
     device: String,
@@ -51,6 +54,17 @@ enum Cmd {
     Bench {
         #[arg(long, default_value_t = 10.0)]
         seconds: f32,
+    },
+    /// Define a senha de acesso pela rede (vale sem reiniciar o servidor).
+    /// Sem --value, lê a senha da entrada padrão.
+    Password {
+        #[arg(long, value_parser = ["admin", "operator", "monitor"], default_value = "operator")]
+        role: String,
+        #[arg(long)]
+        value: Option<String>,
+        /// Apaga a senha do perfil (e derruba as sessões abertas com ela).
+        #[arg(long)]
+        clear: bool,
     },
     /// Cria um acesso (token) sem precisar do servidor ligado.
     Token {
@@ -77,19 +91,64 @@ async fn main() {
         Cmd::Serve => serve(cli.serve).await,
         Cmd::Devices => devices(),
         Cmd::Bench { seconds } => bench::run(seconds, cli.serve.rate),
-        Cmd::Token { name, role } => {
-            let role = match role.as_str() {
-                "admin" => auth::Role::Admin,
-                "operator" => auth::Role::Operator,
-                _ => auth::Role::Monitor,
+        Cmd::Password { role, value, clear } => {
+            let role = parse_role(&role);
+            let (mut a, first) = auth::Auth::load(&cli.serve.data.join("auth.json"));
+            if let Some(t) = first {
+                println!("Token de admin desta máquina (criado agora): {t}");
+            }
+            let pw = if clear {
+                None
+            } else {
+                Some(value.unwrap_or_else(|| {
+                    eprint!("Nova senha do perfil {role:?}: ");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).ok();
+                    line.trim_end_matches(['\r', '\n']).to_string()
+                }))
             };
+            match a.set_password(role, pw.as_deref()) {
+                Ok(()) if clear => println!("Senha do perfil {role:?} apagada."),
+                Ok(()) => println!("Senha do perfil {role:?} definida. Sessões antigas desse perfil foram encerradas."),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Cmd::Token { name, role } => {
+            let role = parse_role(&role);
             let (mut a, first) = auth::Auth::load(&cli.serve.data.join("auth.json"));
             if let Some(t) = first {
                 println!("admin (criado agora): {t}");
             }
-            println!("{name} ({role:?}): {}", a.issue(&name, role));
+            println!("{name} ({role:?}): {}", a.issue(&name, role, false));
         }
     }
+}
+
+fn parse_role(r: &str) -> auth::Role {
+    match r {
+        "admin" => auth::Role::Admin,
+        "operator" => auth::Role::Operator,
+        _ => auth::Role::Monitor,
+    }
+}
+
+/// Endereços IPv4 desta máquina nas redes locais (sem loopback).
+fn lan_urls(port: u16) -> Vec<String> {
+    let mut v: Vec<String> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.ip() {
+            std::net::IpAddr::V4(ip) if !ip.is_link_local() => Some(format!("http://{ip}:{port}")),
+            _ => None,
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn devices() {
@@ -106,6 +165,23 @@ fn devices() {
 }
 
 async fn serve(args: ServeArgs) {
+    let (mut auth, first) = auth::Auth::load(&args.data.join("auth.json"));
+    if let Some(token) = &first {
+        tracing::warn!("Primeiro início. Token de admin desta máquina (guarde, não aparece de novo): {token}");
+    }
+    let has_password = auth.has_password();
+    let bind_text = args.bind.clone().unwrap_or_else(|| format!("{}:{}", if has_password { "0.0.0.0" } else { "127.0.0.1" }, args.port));
+    let bind: std::net::SocketAddr = match bind_text.parse() {
+        Ok(b) => b,
+        Err(_) => {
+            tracing::error!("Endereço inválido: {bind_text} (use ip:porta, ex. 0.0.0.0:7340)");
+            std::process::exit(2);
+        }
+    };
+    if !bind.ip().is_loopback() && !has_password {
+        tracing::error!("Para abrir o Sona na rede, defina antes uma senha: sona-server password --role operator");
+        std::process::exit(2);
+    }
     let stats = Arc::new(audio::EngineStats::default());
     let io = if args.device == "sim" {
         audio::sim::demo_layout()
@@ -145,28 +221,33 @@ async fn serve(args: ServeArgs) {
         unreachable!()
     };
 
-    let (auth, first) = auth::Auth::load(&args.data.join("auth.json"));
-    if let Some(token) = &first {
-        tracing::warn!("Primeiro início. Token de admin (guarde, não aparece de novo): {token}");
-    }
     let device_name = if args.device == "sim" { "Simulado".to_string() } else { args.device.clone() };
-    let app = api::App::new(store, auth, stats, device_name);
+    let lan = if bind.ip().is_loopback() { Vec::new() } else { lan_urls(bind.port()) };
+    let app = api::App::new(store, auth, stats, device_name, lan.clone());
     api::spawn_meter_task(app.clone());
     api::spawn_save_task(app.clone());
 
-    let listener = match tokio::net::TcpListener::bind(&args.bind).await {
+    let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!("Não consegui abrir {}: {e}", args.bind);
+            tracing::error!("Não consegui abrir {bind}: {e}");
             std::process::exit(2);
         }
     };
-    tracing::info!("Sona no ar em http://{} ({} Hz, bloco {})", args.bind, args.rate, args.block);
+    let local = format!("http://127.0.0.1:{}", bind.port());
+    tracing::info!("Sona no ar ({} Hz, bloco {}). Nesta máquina: {local}", args.rate, args.block);
+    if bind.ip().is_loopback() {
+        tracing::info!("Só esta máquina acessa. Para a rede: sona-server password --role operator, e reinicie.");
+    } else {
+        for u in &lan {
+            tracing::info!("Na rede (com senha): {u}");
+        }
+    }
     if let Some(token) = first {
-        tracing::info!("Abra http://{}/#token={token}", args.bind);
+        tracing::info!("Admin nesta máquina: {local}/#token={token}");
     }
     let app_for_exit = app.clone();
-    axum::serve(listener, api::router(app, Some(args.web)))
+    axum::serve(listener, api::router(app, Some(args.web)).into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

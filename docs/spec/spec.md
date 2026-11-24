@@ -78,12 +78,18 @@ Servidor → cliente: `hello` (sessão, perfil, estado, motor), `state` (estado
 inteiro + `rev` + `by`), `meters` (`ch`, `gr`, `gate`, `bus`, `lim`), `engine`,
 `error` (`message`, `issues`), `pong`.
 
-HTTP: `GET /api/health` (sem token), `GET /api/state`, `POST /api/tokens`
-(admin), `GET /api/devices` (admin). Interface estática na raiz.
+Servidor → cliente também: `revoked` (sessão encerrada porque a senha mudou).
+
+HTTP: `GET /api/health` (sem token; informa `password_login` e `lan_urls`),
+`POST /api/login` (`password`, `name` → `token`, `role`; 401 senha errada, 429
+bloqueio), `GET|POST /api/password` (admin; `role`, `password` ou `null`),
+`GET /api/state`, `POST /api/tokens` (admin), `GET /api/devices` (admin).
+Interface estática na raiz.
 
 ## 7. Persistência
 
-`data/state.json` (`format: 1`, `mixer`, `scenes`) e `data/auth.json` (hashes).
+`data/state.json` (`format: 1`, `mixer`, `scenes`) e `data/auth.json` (hashes
+de tokens e de senhas por perfil).
 Gravação 0,5 s depois da última mudança e no desligamento.
 
 ## 8. Requisitos e onde são verificados

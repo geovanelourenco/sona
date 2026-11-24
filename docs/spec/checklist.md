@@ -17,7 +17,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 | FR-09 Endpoints do sistema | ⏳ | Fase 3 com dispositivos virtuais existentes (ADR 0004). |
 | FR-10 Persistência e cenas | ✅ | e2e: reinício restaura mix e cenas; entrada ausente vira aviso visível e o motor roda; estado corrompido não derruba. |
 | FR-11 Recuperação de falhas | 🟡 | Motor trata entrada ausente como silêncio. Console reconecta sozinho. Falta: reabrir dispositivo USB que caiu e recuperar com fade; bridge (fase 3). 🔧 |
-| FR-12 Descoberta e autenticação | 🟡 | Tokens com hash, perfis admin/operador/monitor, recusa sem token (e2e). Falta mDNS, revogação pela interface, HTTPS fora da LAN. |
+| FR-12 Descoberta e autenticação | 🟡 | Senha por perfil para acesso pela rede (Argon2id), definida na máquina ou pelo admin; troca derruba sessões; bloqueio após 5 erros; recusa abrir na rede sem senha; endereços da rede no log e no console (e2e: 9 verificações). Falta mDNS (hoje o endereço é digitado), HTTPS fora da LAN. |
 
 ## Segurança de operação
 

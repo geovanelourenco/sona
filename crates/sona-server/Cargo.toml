@@ -30,6 +30,8 @@ clap = { version = "4", features = ["derive"] }
 rtrb = "0.3"
 cpal = { version = "0.18", optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+argon2 = "0.6"
+if-addrs = "0.15"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"

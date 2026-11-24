@@ -5,7 +5,7 @@ use crate::audio::EngineStats;
 use crate::auth::{Auth, Role};
 use crate::state::Store;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -13,9 +13,11 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 
 pub struct App {
@@ -26,12 +28,19 @@ pub struct App {
     pub tx: broadcast::Sender<Arc<str>>,
     pub sessions: AtomicU64,
     pub clients: AtomicU64,
+    /// Endereços de acesso na rede (ex.: http://192.168.0.10:7340).
+    pub lan_urls: Vec<String>,
+    login_failures: Mutex<HashMap<IpAddr, (u32, Instant)>>,
 }
+
+/// Tentativas erradas seguidas antes de bloquear um IP.
+const MAX_FAILURES: u32 = 5;
+const LOCKOUT: Duration = Duration::from_secs(60);
 
 pub type Shared = Arc<App>;
 
 impl App {
-    pub fn new(store: Store, auth: Auth, stats: Arc<EngineStats>, device: String) -> Shared {
+    pub fn new(store: Store, auth: Auth, stats: Arc<EngineStats>, device: String, lan_urls: Vec<String>) -> Shared {
         let (tx, _) = broadcast::channel(256);
         Arc::new(App {
             store: Mutex::new(store),
@@ -41,6 +50,8 @@ impl App {
             tx,
             sessions: AtomicU64::new(0),
             clients: AtomicU64::new(0),
+            lan_urls,
+            login_failures: Mutex::new(HashMap::new()),
         })
     }
 
@@ -62,6 +73,8 @@ pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
         .route("/api/health", get(health))
         .route("/api/state", get(state))
         .route("/api/tokens", post(issue_token))
+        .route("/api/login", post(login))
+        .route("/api/password", post(set_password).get(password_roles))
         .route("/api/devices", get(devices))
         .route("/api/ws", get(ws));
     let api = match web_dir {
@@ -86,7 +99,98 @@ fn authed(app: &App, token: Option<&str>) -> Result<(String, Role), Response> {
 }
 
 async fn health(State(app): State<Shared>) -> Json<Value> {
-    Json(json!({ "name": "sona", "version": env!("CARGO_PKG_VERSION"), "engine": app.engine_status() }))
+    let password_login = app.auth.lock().unwrap().has_password();
+    Json(json!({
+        "name": "sona",
+        "version": env!("CARGO_PKG_VERSION"),
+        "engine": app.engine_status(),
+        "password_login": password_login,
+        "lan_urls": app.lan_urls,
+    }))
+}
+
+#[derive(Deserialize)]
+struct LoginReq {
+    password: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// Entrada com senha: devolve um token de sessão do perfil da senha.
+async fn login(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Json(req): Json<LoginReq>) -> Response {
+    let ip = peer.ip();
+    {
+        let mut f = app.login_failures.lock().unwrap();
+        if let Some((n, at)) = f.get(&ip).copied() {
+            if n >= MAX_FAILURES && at.elapsed() < LOCKOUT {
+                let wait = (LOCKOUT - at.elapsed()).as_secs() + 1;
+                return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": format!("Muitas tentativas. Tente de novo em {wait} s.")})))
+                    .into_response();
+            }
+            if at.elapsed() >= LOCKOUT {
+                f.remove(&ip);
+            }
+        }
+    }
+    // Argon2 custa dezenas de ms: roda fora do executor assíncrono.
+    let app2 = app.clone();
+    let password = req.password;
+    let role = tokio::task::spawn_blocking(move || app2.auth.lock().unwrap().check_password(&password)).await.ok().flatten();
+    match role {
+        Some(role) => {
+            app.login_failures.lock().unwrap().remove(&ip);
+            let name = match req.name.trim() {
+                "" => format!("{ip}"),
+                n => n.chars().take(40).collect(),
+            };
+            let token = app.auth.lock().unwrap().issue(&name, role, true);
+            tracing::info!("entrada com senha: {name} ({role:?}) de {ip}");
+            Json(json!({ "token": token, "role": role })).into_response()
+        }
+        None => {
+            let mut f = app.login_failures.lock().unwrap();
+            let e = f.entry(ip).or_insert((0, Instant::now()));
+            e.0 += 1;
+            e.1 = Instant::now();
+            tracing::warn!("senha errada de {ip} ({}ª)", e.0);
+            (StatusCode::UNAUTHORIZED, Json(json!({"error": "Senha incorreta."}))).into_response()
+        }
+    }
+}
+
+async fn password_roles(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    match authed(&app, bearer(&headers)) {
+        Ok((_, Role::Admin)) => Json(json!({ "password_roles": app.auth.lock().unwrap().password_roles() })).into_response(),
+        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin vê as senhas configuradas."}))).into_response(),
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct PasswordReq {
+    role: Role,
+    /// `null` apaga a senha do perfil.
+    password: Option<String>,
+}
+
+async fn set_password(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<PasswordReq>) -> Response {
+    match authed(&app, bearer(&headers)) {
+        Ok((name, Role::Admin)) => {
+            let app2 = app.clone();
+            let r = tokio::task::spawn_blocking(move || app2.auth.lock().unwrap().set_password(req.role, req.password.as_deref())).await;
+            match r {
+                Ok(Ok(())) => {
+                    tracing::info!("{name} mudou a senha do perfil {:?}", req.role);
+                    let roles = app.auth.lock().unwrap().password_roles();
+                    Json(json!({ "ok": true, "password_roles": roles })).into_response()
+                }
+                Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Falha ao salvar a senha." }))).into_response(),
+            }
+        }
+        Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin muda senhas."}))).into_response(),
+        Err(r) => r,
+    }
 }
 
 async fn state(State(app): State<Shared>, headers: HeaderMap) -> Response {
@@ -105,7 +209,7 @@ struct TokenReq {
 async fn issue_token(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<TokenReq>) -> Response {
     match authed(&app, bearer(&headers)) {
         Ok((_, Role::Admin)) => {
-            let token = app.auth.lock().unwrap().issue(&req.name, req.role);
+            let token = app.auth.lock().unwrap().issue(&req.name, req.role, false);
             Json(json!({ "token": token, "role": req.role })).into_response()
         }
         Ok(_) => (StatusCode::FORBIDDEN, Json(json!({"error": "Só o admin cria acessos."}))).into_response(),
@@ -134,7 +238,10 @@ struct WsQuery {
 
 async fn ws(State(app): State<Shared>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
     match authed(&app, q.token.as_deref()) {
-        Ok((name, role)) => upgrade.on_upgrade(move |socket| session(app, socket, name, role)),
+        Ok((name, role)) => {
+            let token = q.token.unwrap_or_default();
+            upgrade.on_upgrade(move |socket| session(app, socket, name, role, token))
+        }
         Err(r) => r,
     }
 }
@@ -154,7 +261,7 @@ enum ClientMsg {
     Ping,
 }
 
-async fn session(app: Shared, socket: WebSocket, name: String, role: Role) {
+async fn session(app: Shared, socket: WebSocket, name: String, role: Role, token: String) {
     let id = app.sessions.fetch_add(1, Relaxed) + 1;
     app.clients.fetch_add(1, Relaxed);
     tracing::info!("cliente {id} conectou ({name}, {role:?})");
@@ -175,9 +282,23 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role) {
         return;
     }
 
+    let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (app_w, revoked_w) = (app.clone(), revoked.clone());
     let writer = tokio::spawn(async move {
+        let mut check = tokio::time::interval(Duration::from_secs(2));
         loop {
             let text: String = tokio::select! {
+                _ = check.tick() => {
+                    // Senha trocada ou acesso revogado: encerra a sessão aberta.
+                    if app_w.auth.lock().unwrap().verify(&token).is_none() {
+                        revoked_w.store(true, Relaxed);
+                        let msg = json!({"type": "revoked", "message": "Seu acesso foi encerrado (senha trocada). Entre de novo."});
+                        let _ = sink.send(Message::Text(msg.to_string().into())).await;
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
+                    continue;
+                },
                 m = bcast.recv() => match m {
                     Ok(t) => t.to_string(),
                     // Cliente lento: pula medidores perdidos, segue.
@@ -193,6 +314,9 @@ async fn session(app: Shared, socket: WebSocket, name: String, role: Role) {
     });
 
     while let Some(Ok(msg)) = stream.next().await {
+        if revoked.load(Relaxed) {
+            break;
+        }
         let Message::Text(text) = msg else { continue };
         let reply = |m: Value| {
             let _ = direct_tx.try_send(m.to_string());

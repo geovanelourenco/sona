@@ -12,8 +12,16 @@
   divergência entre operadores. Rever se passar de ~200 KB.
 - Autenticação por token (hash SHA-256 no disco). Perfis: admin (tudo),
   operador (mix, sem fonte/saída/ligar retorno), monitor (só o próprio fone).
+- Acesso pela rede por senha, uma por perfil (Argon2id com salt no disco),
+  definida na máquina do servidor (`sona-server password`) ou pelo admin no
+  console. `POST /api/login` troca a senha por um token de sessão. Trocar ou
+  apagar a senha de um perfil derruba as sessões dele (o WebSocket confere o
+  token a cada 2 s e fecha com `revoked`). O arquivo é relido quando muda, então
+  a linha de comando vale sem reiniciar. 5 erros seguidos bloqueiam o IP por 60 s.
+- Sem `--bind`, o servidor escuta em `0.0.0.0` se houver senha e em `127.0.0.1`
+  se não houver. Escutar fora do loopback sem senha é recusado na partida.
 - Navegador passa o token na query do WebSocket (o navegador não deixa pôr
-  cabeçalho). Padrão `127.0.0.1`; LAN com `--bind`. Nada exposto à internet.
+  cabeçalho). Nada exposto à internet.
 - Cenas guardam o mix. Chamar cena não mexe em fontes, saídas, tipo e
   liga/desliga de buses (roteamento físico é do admin e não muda no susto).
 - Persistência em `data/state.json` com escrita atômica (temporário + fsync +

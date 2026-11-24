@@ -18,6 +18,8 @@ interface Store {
   state: ServerState | null;
   engine: EngineStatus | null;
   toasts: Toast[];
+  /** Motivo de ter voltado à tela de entrada (ex.: senha trocada). */
+  loginNotice: string | null;
   /** Bus de fone deste operador (índice), guardado neste navegador. */
   myMonitor: number | null;
   connect: (token: string) => void;
@@ -90,6 +92,7 @@ export const useMixer = create<Store>((set, get) => ({
   state: null,
   engine: null,
   toasts: [],
+  loginNotice: null,
   myMonitor: (() => {
     const v = LS.get('sona.monitor');
     return v === null ? null : Number(v);
@@ -99,7 +102,7 @@ export const useMixer = create<Store>((set, get) => ({
     wantToken = token;
     clearTimeout(retryTimer);
     ws?.close();
-    set({ conn: 'connecting' });
+    set({ conn: 'connecting', loginNotice: null });
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const sock = new WebSocket(`${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}`);
     ws = sock;
@@ -128,6 +131,13 @@ export const useMixer = create<Store>((set, get) => ({
         case 'error':
           get().toast('error', m.message);
           break;
+        case 'revoked':
+          tokenStore.set(null);
+          wantToken = null;
+          ws = null;
+          sock.close();
+          set({ conn: 'idle', state: null, role: null, loginNotice: m.message });
+          break;
       }
     };
     sock.onclose = () => {
@@ -135,7 +145,13 @@ export const useMixer = create<Store>((set, get) => ({
       if (!opened && retry === 0) {
         // Recusado no aperto de mão: quase sempre token inválido.
         fetch('/api/state', { headers: { Authorization: `Bearer ${token}` } })
-          .then((r) => set({ conn: r.status === 401 ? 'unauthorized' : 'closed' }))
+          .then((r) => {
+            if (r.status === 401) {
+              tokenStore.set(null);
+              wantToken = null;
+            }
+            set({ conn: r.status === 401 ? 'unauthorized' : 'closed' });
+          })
           .catch(() => set({ conn: 'closed' }));
       } else {
         set({ conn: 'closed' });

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { shareBase, useHealth } from '../lib/health';
 import { useMixer, tokenStore } from '../lib/store';
 import { BUS_KIND_LABEL, type Role, type SourceMap } from '../lib/types';
 import { withSend } from './Strip';
@@ -120,6 +121,7 @@ export function Routing() {
           )}
         </Card>
 
+        <NetworkAccess admin={admin} />
         {admin && <Access />}
       </div>
     </div>
@@ -131,8 +133,9 @@ function Access() {
   const [role, setRole] = useState<Role>('operator');
   const [made, setMade] = useState<{ name: string; link: string } | null>(null);
   const toast = useMixer((s) => s.toast);
+  const base = shareBase(useHealth());
   return (
-    <Card title="Acessos">
+    <Card title="Códigos de acesso">
       <p className="text-[11.5px] text-muted">Crie um acesso para outro operador. O link aparece uma vez só.</p>
       <div className="flex gap-2">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome" aria-label="Nome do acesso" className="lm-field h-8 min-w-0 flex-1 px-2.5 text-[12.5px]" />
@@ -149,7 +152,7 @@ function Access() {
           const r = await fetch('/api/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenStore.get()}` }, body: JSON.stringify({ name: name.trim(), role }) });
           if (!r.ok) return toast('error', 'Não consegui criar o acesso.');
           const { token } = await r.json();
-          setMade({ name: name.trim(), link: `${location.origin}/#token=${token}` });
+          setMade({ name: name.trim(), link: `${base}/#token=${token}` });
           setName('');
         }}
       >
@@ -159,6 +162,92 @@ function Access() {
         <div className="flex flex-col gap-1 rounded-lg border border-accent/40 bg-accent/10 p-2">
           <span className="text-[11.5px] font-semibold text-accent-text">Link de {made.name}</span>
           <input readOnly value={made.link} onFocus={(e) => e.target.select()} className="lm-field h-7 px-2 font-mono text-[10.5px]" aria-label="Link de acesso" />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const ROLE_LABEL: Record<Role, string> = { admin: 'Admin', operator: 'Operador', monitor: 'Só fone' };
+
+/** Endereço na rede e senhas por perfil. Senha só o admin muda. */
+function NetworkAccess({ admin }: { admin: boolean }) {
+  const [rev, setRev] = useState(0);
+  const health = useHealth(rev);
+  const toast = useMixer((s) => s.toast);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [editing, setEditing] = useState<Role | null>(null);
+  const [pw, setPw] = useState('');
+  const auth = { Authorization: `Bearer ${tokenStore.get()}` };
+
+  useEffect(() => {
+    if (!admin) return;
+    fetch('/api/password', { headers: auth })
+      .then((r) => r.json())
+      .then((j) => setRoles(j.password_roles ?? []))
+      .catch(() => {});
+  }, [admin, rev]);
+
+  const save = async (role: Role, password: string | null) => {
+    const r = await fetch('/api/password', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ role, password }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return toast('error', j.error ?? 'Não consegui salvar a senha.');
+    toast('info', password ? `Senha de ${ROLE_LABEL[role]} salva. Quem entrou com a antiga precisa entrar de novo.` : `Senha de ${ROLE_LABEL[role]} apagada.`);
+    setEditing(null);
+    setPw('');
+    setRev(rev + 1);
+  };
+
+  const urls = health?.lan_urls ?? [];
+  return (
+    <Card title="Acesso pela rede">
+      {urls.length ? (
+        <>
+          <p className="text-[11.5px] text-muted">Outros computadores e tablets da rede abrem:</p>
+          {urls.map((u) => (
+            <input key={u} readOnly value={u} onFocus={(e) => e.target.select()} aria-label="Endereço na rede" className="lm-field h-8 px-2.5 font-mono text-[12px] text-hi" />
+          ))}
+        </>
+      ) : (
+        <p className="rounded-lg border border-line bg-bg/60 px-2.5 py-2 text-[11.5px] text-subtle">
+          O servidor está aberto só nesta máquina. Defina uma senha e reinicie o servidor para abrir na rede.
+        </p>
+      )}
+      {admin && (
+        <div className="flex flex-col gap-1.5 pt-1">
+          {(['operator', 'monitor', 'admin'] as Role[]).map((r) => (
+            <div key={r} className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 text-[12px] font-semibold text-text">Senha de {ROLE_LABEL[r]}</span>
+                <span className={cx('text-[11px] font-semibold', roles.includes(r) ? 'text-ok-light' : 'text-muted')}>{roles.includes(r) ? 'definida' : 'sem senha'}</span>
+                <Btn variant="ghost" className="h-7 px-2" onClick={() => setEditing(editing === r ? null : r)}>
+                  {roles.includes(r) ? 'Trocar' : 'Definir'}
+                </Btn>
+                {roles.includes(r) && (
+                  <Btn variant="ghost" className="h-7 px-2" onClick={() => confirm(`Apagar a senha de ${ROLE_LABEL[r]}? Quem entrou com ela sai.`) && save(r, null)}>
+                    Apagar
+                  </Btn>
+                )}
+              </div>
+              {editing === r && (
+                <form
+                  className="flex gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    save(r, pw);
+                  }}
+                >
+                  <input autoFocus type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="mínimo 6 caracteres" aria-label={`Nova senha de ${ROLE_LABEL[r]}`} autoComplete="new-password" className="lm-field h-8 min-w-0 flex-1 px-2.5 text-[12.5px]" />
+                  <Btn variant="primary" type="submit" disabled={pw.length < 6}>
+                    Salvar
+                  </Btn>
+                </form>
+              )}
+            </div>
+          ))}
+          <p className="text-[11px] leading-relaxed text-muted">
+            Cada pessoa entra com a senha do perfil dela. Também dá para definir na máquina do servidor: <code className="font-mono text-subtle">sona-server password --role operator</code>.
+          </p>
         </div>
       )}
     </Card>
