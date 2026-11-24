@@ -12,6 +12,7 @@
 
 pub mod biquad;
 pub mod config;
+pub mod drift;
 pub mod dynamics;
 pub mod engine;
 pub mod level;

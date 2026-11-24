@@ -10,3 +10,7 @@ rust-version = "1.80"
 
 [profile.release]
 debug = 1
+
+# Os testes simulam minutos de áudio; sem otimização levariam muito tempo.
+[profile.test]
+opt-level = 2

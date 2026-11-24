@@ -76,3 +76,21 @@ fn process_nao_aloca_nem_com_plano_novo() {
     assert_eq!(n, 0, "troca de plano alocou {n} vezes na thread de áudio");
     h.collect();
 }
+
+#[test]
+fn ponte_de_relogio_nao_aloca() {
+    let (mut w, mut r, _stats) = sona_core::drift::bridge(2, SR as f64, 10.0);
+    let data = vec![0.1f32; 256];
+    let (mut l, mut rr) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+    for _ in 0..8 {
+        w.push_interleaved(&data);
+    }
+    let n = counted(|| {
+        for _ in 0..1000 {
+            w.push_interleaved(&data);
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut rr];
+            r.pull_planar(&mut outs, 128);
+        }
+    });
+    assert_eq!(n, 0, "ponte alocou {n} vezes");
+}
