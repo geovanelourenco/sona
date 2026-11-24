@@ -1,36 +1,81 @@
-//! Hospedagem do motor: dispositivo simulado e dispositivos reais.
+//! Hospedagem do motor: um dispositivo principal (dita o relógio), dispositivos
+//! secundários (cada um com o seu relógio, via ponte de deriva) e vagas de rede
+//! para os bridges.
+//!
+//! Lista plana de canais do motor, com faixas fixas para que trocar um aparelho
+//! não embaralhe o roteamento salvo:
+//!
+//! | faixa | uso |
+//! |---|---|
+//! | 0..64 | dispositivo principal (Ui24R, simulado) |
+//! | 64..96 | dispositivos secundários, na ordem da configuração |
+//! | 96..112 | vagas de rede: vaga `i` usa 96 + 2i (L) e 97 + 2i (R) |
 
+pub mod composite;
+pub mod config;
+pub mod host;
 #[cfg(feature = "hw")]
 pub mod hw;
+pub mod netslot;
 pub mod sim;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 
+pub const PRIMARY_BASE: usize = 0;
+pub const PRIMARY_MAX: usize = 64;
+pub const SECONDARY_BASE: usize = 64;
+pub const SECONDARY_MAX: usize = 32;
+pub const NET_BASE: usize = 96;
+pub const NET_SLOTS: usize = 8;
+pub const PORTS: usize = NET_BASE + 2 * NET_SLOTS;
+
 /// Um canal na lista plana de entradas ou saídas do motor.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Port {
+    pub index: usize,
     pub name: String,
     pub device: String,
     /// Domínio de relógio / dispositivo. Mesmo número = mesmo aparelho.
     pub domain: u32,
+    /// Existe na configuração atual (faixas vazias ficam com `present: false`).
+    pub present: bool,
+    /// O aparelho ou bridge está ligado agora.
     pub connected: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct IoLayout {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
 }
 
+impl Default for IoLayout {
+    fn default() -> Self {
+        let blank = |i| Port { index: i, ..Port::default() };
+        IoLayout { inputs: (0..PORTS).map(blank).collect(), outputs: (0..PORTS).map(blank).collect() }
+    }
+}
+
 impl IoLayout {
     pub fn to_layout(&self, sample_rate: u32, block: usize) -> sona_core::Layout {
-        let mut l = sona_core::Layout::new(sample_rate as f32, block.max(64), self.inputs.len(), self.outputs.len());
+        let mut l = sona_core::Layout::new(sample_rate as f32, block.max(64), PORTS, PORTS);
         l.input_domains = self.inputs.iter().map(|p| p.domain).collect();
         l.output_domains = self.outputs.iter().map(|p| p.domain).collect();
         l
     }
+
+    pub fn set(&mut self, output: bool, index: usize, name: String, device: &str, domain: u32) {
+        let list = if output { &mut self.outputs } else { &mut self.inputs };
+        if let Some(p) = list.get_mut(index) {
+            *p = Port { index, name, device: device.into(), domain, present: true, connected: true };
+        }
+    }
 }
+
+/// Domínios de relógio (para o aviso de laço pela mesa).
+pub const DOMAIN_PRIMARY: u32 = 1;
+pub const DOMAIN_NET: u32 = 1000;
 
 /// Estatísticas da thread de áudio, sem trava.
 #[derive(Default)]
@@ -44,7 +89,7 @@ pub struct EngineStats {
     pub load_peak_permille: AtomicU32,
     /// Blocos que estouraram o orçamento (equivale a underrun no hardware).
     pub late_blocks: AtomicU64,
-    /// Entrada sem dados quando a saída pediu (duplex em hardware).
+    /// Entrada do principal sem dados quando a saída pediu.
     pub input_starved: AtomicU64,
     pub blocks: AtomicU64,
 }

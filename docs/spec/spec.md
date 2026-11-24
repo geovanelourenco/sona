@@ -55,7 +55,14 @@ mesmo aparelho; `input_disconnected` e `output_disconnected` quando o hardware
 atual não tem o canal salvo (a configuração salva não é alterada; o motor usa
 silêncio no lugar).
 
-## 5. Tempo real
+## 5. Dispositivos (ADR 0007)
+
+Principal (dita o relógio: Ui24R, simulado ou relógio interno), secundários
+(entradas e saídas extras, via ponte de deriva) e 8 vagas de rede para bridges.
+Faixas fixas na lista de canais: principal 0–63, secundários 64–95, rede
+96–111. Configuração em `data/audio.json`; `GET|POST /api/audio`.
+
+## 5b. Tempo real
 
 - Bloco padrão 128 amostras a 48 kHz; aceita qualquer bloco (fatia acima de
   `max_block`).
@@ -86,7 +93,8 @@ HTTP:
 | `POST /api/login` | não | `password`, `name` → `token`, `name`. 401 senha errada, 403 remoto desligado, 429 bloqueio |
 | `POST /api/access` | sim | `app_password`, `remote_password` (texto ou `null`), `finish_setup` |
 | `GET /api/state` | sim | estado |
-| `GET /api/devices` | sim | dispositivos de áudio |
+| `GET /api/devices` | sim | dispositivos de áudio do sistema |
+| `GET /api/audio` / `POST /api/audio` | sim | configuração de áudio e estado de cada aparelho; aplicar reabre os aparelhos (~1 s sem som) |
 
 Interface estática na raiz (servida também para a rede, para mostrar a tela de
 entrada). Regras de acesso: ADR 0005.

@@ -14,8 +14,15 @@ export function Routing() {
   const ins = st.io.inputs;
   const outs = st.io.outputs;
   const sourceOptions: { key: string; label: string; value: SourceMap }[] = [{ key: 'none', label: '— sem fonte —', value: { kind: 'none' } }];
-  ins.forEach((p, i) => sourceOptions.push({ key: `m:${i}`, label: p.name, value: { kind: 'mono', input: i } }));
-  for (let i = 0; i + 1 < ins.length; i++) sourceOptions.push({ key: `s:${i}:${i + 1}`, label: `${ins[i].name} + ${ins[i + 1].name} (estéreo)`, value: { kind: 'stereo', left: i, right: i + 1 } });
+  const present = ins.filter((p) => p.present);
+  // Pares L/R primeiro (fontes estéreo), depois cada canal.
+  for (const p of present) {
+    const r = ins[p.index + 1];
+    if (p.name.endsWith(' L') && r?.present && r.name.endsWith(' R'))
+      sourceOptions.push({ key: `s:${p.index}:${r.index}`, label: `${p.name.replace(/ L$/, '')} (estéreo)`, value: { kind: 'stereo', left: p.index, right: r.index } });
+  }
+  for (const p of present) sourceOptions.push({ key: `m:${p.index}`, label: p.name, value: { kind: 'mono', input: p.index } });
+  const known = (s: SourceMap) => sourceOptions.some((o) => o.key === sourceKey(s));
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto p-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -49,6 +56,7 @@ export function Routing() {
                       onChange={(e) => patch(`/channels/${c}`, { source: sourceOptions.find((o) => o.key === e.target.value)!.value })}
                       className="lm-field h-7 max-w-[180px] px-1.5 text-[11.5px] disabled:opacity-60"
                     >
+                      {!known(ch.source) && <option value={sourceKey(ch.source)}>(entrada ausente)</option>}
                       {sourceOptions.map((o) => (
                         <option key={o.key} value={o.key}>{o.label}</option>
                       ))}
@@ -91,13 +99,14 @@ export function Routing() {
                 className="lm-field h-7 px-1.5 text-[11.5px] disabled:opacity-60"
               >
                 <option value="">— nenhuma —</option>
-                {outs.map((o, k) =>
-                  k + 1 < outs.length ? (
-                    <option key={k} value={k}>
-                      {o.name} / {outs[k + 1].name}
+                {outs
+                  .filter((o) => o.present && outs[o.index + 1]?.present && (o.index % 2 === 0 || !o.name.endsWith(' R')))
+                  .map((o) => (
+                    <option key={o.index} value={o.index}>
+                      {o.name.endsWith(' L') && outs[o.index + 1].name.endsWith(' R') ? o.name.replace(/ L$/, '') : `${o.name} / ${outs[o.index + 1].name}`}
+                      {o.device === 'Sona Bridge' && !o.connected ? ' (aguardando bridge)' : ''}
                     </option>
-                  ) : null,
-                )}
+                  ))}
               </select>
             </label>
           ))}

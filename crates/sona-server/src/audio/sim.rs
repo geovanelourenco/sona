@@ -1,41 +1,18 @@
-//! Dispositivo simulado: gera sinais de teste nas entradas e descarta as
-//! saídas, no ritmo de um relógio de áudio. Serve para desenvolver e testar
-//! sem hardware. O ritmo usa `sleep` na thread do dispositivo, nunca dentro de
+//! Relógio de software para o motor: dispositivo simulado (com sinais de teste
+//! nas entradas) ou relógio interno (sem entradas, para servidor sem mesa ou
+//! quando o principal caiu). O ritmo usa `sleep` nesta thread, nunca dentro de
 //! `Engine::process`.
 
-use super::{EngineStats, IoLayout, Port};
-use sona_core::Engine;
+use super::composite::Composite;
+use super::EngineStats;
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub const CONSOLE_DOMAIN: u32 = 1;
-pub const NETWORK_DOMAIN: u32 = 2;
-
-/// Layout de demonstração: 24 canais de "mesa" e 2 fontes estéreo de rede.
-pub fn demo_layout() -> IoLayout {
-    let port = |name: String, device: &str, domain| Port { name, device: device.into(), domain, connected: true };
-    let mut inputs: Vec<Port> = (1..=24).map(|i| port(format!("Mesa {i}"), "Mesa simulada", CONSOLE_DOMAIN)).collect();
-    for (src, dev) in [("Lumo", "Bridge Mídia (sim)"), ("Navegador", "Bridge Mídia (sim)")] {
-        inputs.push(port(format!("{src} L"), dev, NETWORK_DOMAIN));
-        inputs.push(port(format!("{src} R"), dev, NETWORK_DOMAIN));
-    }
-    let mut outputs = vec![
-        port("OBS L".into(), "Bridge OBS (sim)", NETWORK_DOMAIN),
-        port("OBS R".into(), "Bridge OBS (sim)", NETWORK_DOMAIN),
-        port("Mesa USB 1".into(), "Mesa simulada", CONSOLE_DOMAIN),
-        port("Mesa USB 2".into(), "Mesa simulada", CONSOLE_DOMAIN),
-        port("Gravação L".into(), "Gravador (sim)", 3),
-        port("Gravação R".into(), "Gravador (sim)", 3),
-    ];
-    for f in 1..=2 {
-        outputs.push(port(format!("Fone {f} L"), "Fones (sim)", 4));
-        outputs.push(port(format!("Fone {f} R"), "Fones (sim)", 4));
-    }
-    IoLayout { inputs, outputs }
-}
+pub const SIM_INPUTS: usize = 24;
+pub const SIM_OUTPUTS: usize = 10;
 
 struct Voice {
     phase: f32,
@@ -45,12 +22,20 @@ struct Voice {
     amp: f32,
 }
 
-pub struct SimHandle {
+pub struct ClockHandle {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<Composite>>,
 }
 
-impl Drop for SimHandle {
+impl ClockHandle {
+    /// Para o relógio e devolve o motor.
+    pub fn stop(mut self) -> Composite {
+        self.stop.store(true, Relaxed);
+        self.thread.take().unwrap().join().expect("thread de áudio")
+    }
+}
+
+impl Drop for ClockHandle {
     fn drop(&mut self) {
         self.stop.store(true, Relaxed);
         if let Some(t) = self.thread.take() {
@@ -59,31 +44,28 @@ impl Drop for SimHandle {
     }
 }
 
-pub fn start(mut engine: Engine, io: &IoLayout, sample_rate: u32, block: usize, stats: Arc<EngineStats>) -> SimHandle {
-    let n_in = io.inputs.len();
-    let n_out = io.outputs.len();
+/// `tones`: quantas entradas do principal recebem sinal de teste (0 = relógio interno).
+pub fn start(mut comp: Composite, tones: usize, sample_rate: u32, block: usize, stats: Arc<EngineStats>) -> ClockHandle {
     let sr = sample_rate as f32;
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     stats.sample_rate.store(sample_rate, Relaxed);
     stats.block.store(block as u32, Relaxed);
+    let block = block.min(comp.max_block());
     let thread = std::thread::Builder::new()
-        .name("sona-audio-sim".into())
+        .name("sona-relogio".into())
         .spawn(move || {
-            let mut voices: Vec<Voice> = (0..n_in)
-                .map(|i| {
-                    let f = 110.0 * 2f32.powf((i % 24) as f32 / 6.0) * if i >= 24 { 1.5 } else { 1.0 };
-                    Voice {
-                        phase: 0.0,
-                        inc: TAU * f / sr,
-                        env_phase: i as f32,
-                        env_inc: TAU * (0.15 + 0.05 * (i % 7) as f32) / sr,
-                        amp: if i >= 24 { 0.3 } else { 0.18 },
-                    }
+            let mut voices: Vec<Voice> = (0..tones)
+                .map(|i| Voice {
+                    phase: 0.0,
+                    inc: TAU * 110.0 * 2f32.powf((i % 24) as f32 / 6.0) / sr,
+                    env_phase: i as f32,
+                    env_inc: TAU * (0.15 + 0.05 * (i % 7) as f32) / sr,
+                    amp: 0.18,
                 })
                 .collect();
-            let mut ins = vec![vec![0.0f32; block]; n_in];
-            let mut outs = vec![vec![0.0f32; block]; n_out];
+            let mut ins = vec![vec![0.0f32; block]; tones];
+            let mut outs = vec![vec![0.0f32; block]; SIM_OUTPUTS];
             let budget = Duration::from_secs_f64(block as f64 / sample_rate as f64);
             let mut deadline = Instant::now();
             stats.running.store(true, Relaxed);
@@ -98,11 +80,10 @@ pub fn start(mut engine: Engine, io: &IoLayout, sample_rate: u32, block: usize, 
                 }
                 let t0 = Instant::now();
                 {
-                    let in_refs: [&[f32]; 64] = std::array::from_fn(|i| ins.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
-                    let mut out_iter = outs.iter_mut();
-                    let mut out_refs: [&mut [f32]; 64] =
-                        std::array::from_fn(|_| out_iter.next().map(|v| v.as_mut_slice()).unwrap_or(&mut []));
-                    engine.process(&in_refs[..n_in.min(64)], &mut out_refs[..n_out.min(64)], block);
+                    let in_refs: [&[f32]; SIM_INPUTS] = std::array::from_fn(|i| ins.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
+                    let mut it = outs.iter_mut();
+                    let mut out_refs: [&mut [f32]; SIM_OUTPUTS] = std::array::from_fn(|_| it.next().unwrap().as_mut_slice());
+                    comp.run(&in_refs[..tones.min(SIM_INPUTS)], &mut out_refs[..if tones > 0 { SIM_OUTPUTS } else { 0 }], block);
                 }
                 stats.record(t0.elapsed().as_secs_f64(), budget.as_secs_f64());
                 deadline += budget;
@@ -116,7 +97,8 @@ pub fn start(mut engine: Engine, io: &IoLayout, sample_rate: u32, block: usize, 
                 }
             }
             stats.running.store(false, Relaxed);
+            comp
         })
         .expect("thread de áudio");
-    SimHandle { stop, thread: Some(thread) }
+    ClockHandle { stop, thread: Some(thread) }
 }

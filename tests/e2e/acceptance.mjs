@@ -252,7 +252,7 @@ srv.p.kill('SIGINT');
 await new Promise((r) => srv.p.on('exit', r));
 const statePath = join(data, 'state.json');
 const saved = JSON.parse(readFileSync(statePath, 'utf8'));
-saved.mixer.channels[3].source = { kind: 'mono', input: 99 };
+saved.mixer.channels[3].source = { kind: 'mono', input: 200 };
 writeFileSync(statePath, JSON.stringify(saved));
 srv = start();
 await waitUp();
@@ -262,7 +262,7 @@ await check('FR-10', 'reinício restaura mix, cenas e mostra a entrada ausente',
   assert.equal(a.state.mixer.channels[2].name, 'Pregador');
   assert.equal(a.state.mixer.channels[2].fader_db, -7.5);
   assert.deepEqual(a.state.scenes, ['Culto domingo']);
-  assert.deepEqual(a.state.mixer.channels[3].source, { kind: 'mono', input: 99 }, 'config original preservada');
+  assert.deepEqual(a.state.mixer.channels[3].source, { kind: 'mono', input: 200 }, 'config original preservada');
   assert.ok(a.state.validation.warnings.some((w) => w.code === 'input_disconnected' && w.path === '/channels/3/source'));
   const h = await (await fetch(`${base}/api/health`)).json();
   assert.equal(h.engine.running, true, 'motor roda mesmo com entrada ausente');

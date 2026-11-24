@@ -21,6 +21,7 @@ struct Outcome {
     overruns: u64,
     correction_ppm: f64,
     latency_ms: f64,
+    target_ms: f64,
     snr_db: f64,
     tone_amp: f64,
 }
@@ -121,14 +122,16 @@ fn run(s: Sim) -> Outcome {
         overruns: stats.overruns.load(Relaxed),
         correction_ppm: corr_sum / corr_n.max(1) as f64,
         latency_ms: r.latency_ms(),
+        target_ms: r.target_ms(),
         snr_db,
         tone_amp,
     }
 }
 
 fn check(name: &str, s: Sim, max_ppm_error: f64) {
-    let (ppm, target) = (s.ppm, s.target_ms);
+    let ppm = s.ppm;
     let o = run(s);
+    let target = o.target_ms;
     println!(
         "{name}: correção média (30 s) {:.1} ppm (real {ppm}), latência {:.1} ms (alvo {target}), SNR {:.1} dB, underruns {}, overruns {}",
         o.correction_ppm, o.latency_ms, o.snr_db, o.underruns, o.overruns

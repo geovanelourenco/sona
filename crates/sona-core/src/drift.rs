@@ -75,12 +75,13 @@ pub struct Reader {
     epoch: Instant,
 }
 
-/// Cria a ponte. `target_ms`: nível desejado da fila (latência adicionada);
-/// a capacidade é 4× o alvo, no mínimo 4096 quadros.
+/// Cria a ponte. `target_ms`: nível desejado da fila (latência adicionada).
+/// O alvo sobe sozinho se os blocos dos aparelhos forem maiores (ver
+/// `control`). Capacidade: 4× o alvo, no mínimo 16384 quadros.
 pub fn bridge(channels: usize, sample_rate: f64, target_ms: f64) -> (Writer, Reader, Arc<DriftStats>) {
     let channels = channels.max(1);
     let target = (target_ms * 0.001 * sample_rate).max(32.0);
-    let capacity = ((target * 4.0) as usize).max(4096);
+    let capacity = ((target * 4.0) as usize).max(16384);
     let (prod, cons) = RingBuffer::new(capacity * channels);
     let stats = Arc::new(DriftStats::default());
     let progress = Arc::new(Progress::default());
@@ -150,7 +151,12 @@ impl Writer {
 
     /// Escreve quadros planares (um slice por canal; canal ausente = silêncio).
     pub fn push_planar(&mut self, data: &[&[f32]], frames: usize) {
-        let now_s = self.now_s();
+        let t = self.now_s();
+        self.push_planar_at(data, frames, t);
+    }
+
+    /// Igual a `push_planar`, com o instante dado (segundos; para testes).
+    pub fn push_planar_at(&mut self, data: &[&[f32]], frames: usize, now_s: f64) {
         let ch = self.channels;
         let free = self.prod.slots() / ch;
         let n = frames.min(free);
@@ -173,6 +179,11 @@ impl Writer {
 impl Reader {
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// Alvo atual da fila em ms (o pedido, ou mais se os blocos forem maiores).
+    pub fn target_ms(&self) -> f64 {
+        self.target / self.sample_rate * 1000.0
     }
 
     /// Latência média adicionada pela fila, em ms.
@@ -218,6 +229,11 @@ impl Reader {
 
     /// Ajusta a razão de leitura pelo nível da fila. Chamado uma vez por bloco.
     fn control(&mut self, frames: usize, now_s: f64) {
+        // O alvo nunca fica abaixo de 1,5 bloco de cada lado: com o bloco do
+        // aparelho maior que o alvo pedido, a fila esvaziaria a cada leitura.
+        // Só cresce (o tamanho do bloco de um aparelho não costuma mudar).
+        let producer_block = self.progress.last_block.load(Relaxed) as f64;
+        self.target = self.target.max(1.5 * frames as f64 + 1.5 * producer_block);
         let fill = self.estimated_fill(now_s);
         let dt = frames as f64 / self.sample_rate;
         // Média de ~1 s: tira o jitter de chegada.

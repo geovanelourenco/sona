@@ -48,53 +48,70 @@ impl std::fmt::Display for PatchError {
     }
 }
 
-/// Configuração inicial para o layout de demonstração (ver `audio::sim`).
+/// Configuração inicial para a lista de canais atual: um canal mono por
+/// entrada do principal (até 24), um estéreo por par L/R dos secundários e das
+/// 4 primeiras vagas de rede. Transmissão sai pela vaga de rede 1 (bridge do
+/// OBS) e, se houver, também pelo primeiro secundário de saída.
 pub fn default_mixer(io: &IoLayout) -> MixerConfig {
+    use crate::audio::{NET_BASE, SECONDARY_BASE};
     let mut cfg = MixerConfig::default();
-    let n_out = io.outputs.len();
-    let out = |l: usize| (l + 1 < n_out).then(|| OutputPair { left: l, right: l + 1 }).into_iter().collect::<Vec<_>>();
+    let pair = |l: usize| OutputPair { left: l, right: l + 1 };
+    let present_out = |i: usize| io.outputs.get(i).is_some_and(|p| p.present) && io.outputs.get(i + 1).is_some_and(|p| p.present);
+    let mut broadcast = vec![pair(NET_BASE)];
+    if present_out(SECONDARY_BASE) {
+        broadcast.push(pair(SECONDARY_BASE));
+    }
+    let primary_pair = |l: usize| present_out(l).then(|| pair(l)).into_iter().collect::<Vec<_>>();
     cfg.buses = vec![
         BusConfig {
-            outputs: out(0),
+            outputs: broadcast,
             limiter: LimiterConfig { enabled: true, ceiling_db: -1.0, release_ms: 80.0 },
             ..BusConfig::new("Transmissão", BusKind::Broadcast)
         },
-        BusConfig { outputs: out(2), ..BusConfig::new("Retorno PA", BusKind::PaReturn) },
-        BusConfig { outputs: out(4), ..BusConfig::new("Gravação", BusKind::Recording) },
+        BusConfig { outputs: primary_pair(0), ..BusConfig::new("Retorno PA", BusKind::PaReturn) },
+        BusConfig { outputs: primary_pair(4), ..BusConfig::new("Gravação", BusKind::Recording) },
         BusConfig {
-            outputs: out(6),
+            outputs: primary_pair(6),
             monitor: Some(MonitorConfig { follow: Some(0), ..Default::default() }),
             ..BusConfig::new("Fone 1", BusKind::Monitor)
         },
         BusConfig {
-            outputs: out(8),
+            outputs: primary_pair(8),
             monitor: Some(MonitorConfig { follow: Some(0), ..Default::default() }),
             ..BusConfig::new("Fone 2", BusKind::Monitor)
         },
     ];
-    let mut i = 0;
-    let mut k = 0;
-    while i < io.inputs.len() && cfg.channels.len() < 32 {
-        let name = &io.inputs[i].name;
-        let stereo_pair = name.ends_with(" L") && io.inputs.get(i + 1).is_some_and(|n| n.name.ends_with(" R"));
-        let (source, label, step) = if stereo_pair {
-            (SourceMap::Stereo { left: i, right: i + 1 }, name.trim_end_matches(" L").to_string(), 2)
-        } else {
-            k += 1;
-            (SourceMap::Mono { input: i }, format!("Ch {k}"), 1)
-        };
+    let push = |cfg: &mut MixerConfig, name: String, source: SourceMap, stereo: bool| {
         cfg.channels.push(ChannelConfig {
-            name: label,
+            name,
             source,
-            fader_db: if stereo_pair { -6.0 } else { OFF_DB },
+            fader_db: if stereo { -6.0 } else { OFF_DB },
             sends: vec![
                 SendConfig { bus: 0, level_db: 0.0, ..Default::default() },
-                SendConfig { bus: 1, enabled: stereo_pair, level_db: OFF_DB, ..Default::default() },
+                SendConfig { bus: 1, enabled: stereo, level_db: OFF_DB, ..Default::default() },
                 SendConfig { bus: 2, level_db: 0.0, ..Default::default() },
             ],
             ..Default::default()
         });
-        i += step;
+    };
+    let mut k = 0;
+    for p in io.inputs.iter().take(SECONDARY_BASE).filter(|p| p.present).take(24) {
+        k += 1;
+        push(&mut cfg, format!("Ch {k}"), SourceMap::Mono { input: p.index }, false);
+    }
+    let mut i = SECONDARY_BASE;
+    while i < NET_BASE + 8 {
+        let p = &io.inputs[i];
+        let stereo = p.present && p.name.ends_with(" L") && io.inputs.get(i + 1).is_some_and(|n| n.present && n.name.ends_with(" R"));
+        if stereo {
+            push(&mut cfg, p.name.trim_end_matches(" L").to_string(), SourceMap::Stereo { left: i, right: i + 1 }, true);
+            i += 2;
+        } else {
+            if p.present {
+                push(&mut cfg, p.name.clone(), SourceMap::Mono { input: i }, false);
+            }
+            i += 1;
+        }
     }
     cfg
 }
@@ -129,30 +146,47 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Prepara a configuração salva para o hardware atual. Entradas e saídas que
-/// sumiram ficam desligadas no motor, mas continuam na configuração (a UI
-/// mostra como desconectadas). Devolve a cópia para o motor e os avisos.
-pub fn runtime_config(cfg: &MixerConfig, layout: &Layout) -> (MixerConfig, Vec<plan::Issue>) {
+/// Prepara a configuração salva para o hardware atual. Canais que não existem
+/// na lista atual ficam desligados no motor, mas continuam na configuração (a
+/// UI mostra como desconectados). Aparelho presente mas fora do ar também gera
+/// aviso (o motor já recebe silêncio dele). Vagas de rede sem bridge não avisam.
+pub fn runtime_config(cfg: &MixerConfig, io: &IoLayout) -> (MixerConfig, Vec<plan::Issue>) {
+    use crate::audio::NET_BASE;
     let mut rt = cfg.clone();
     let mut issues = Vec::new();
+    let missing = |list: &[crate::audio::Port], i: usize| list.get(i).is_none_or(|p| !p.present);
+    let offline = |list: &[crate::audio::Port], i: usize| list.get(i).is_some_and(|p| p.present && !p.connected && i < NET_BASE);
     for (i, ch) in rt.channels.iter_mut().enumerate() {
-        if ch.source.inputs().any(|x| x >= layout.inputs) {
+        if ch.source.inputs().any(|x| missing(&io.inputs, x)) {
             issues.push(plan::Issue {
                 code: "input_disconnected",
                 path: format!("/channels/{i}/source"),
-                message: format!("A entrada de \"{}\" não está conectada.", ch.name),
+                message: format!("A entrada de \"{}\" não existe na configuração de áudio atual.", ch.name),
             });
             ch.source = SourceMap::None;
+        } else if ch.source.inputs().any(|x| offline(&io.inputs, x)) {
+            issues.push(plan::Issue {
+                code: "input_offline",
+                path: format!("/channels/{i}/source"),
+                message: format!("O aparelho da entrada de \"{}\" está fora do ar.", ch.name),
+            });
         }
     }
     for (b, bus) in rt.buses.iter_mut().enumerate() {
         let before = bus.outputs.len();
-        bus.outputs.retain(|o| o.left < layout.outputs && o.right < layout.outputs);
+        bus.outputs.retain(|o| !missing(&io.outputs, o.left) && !missing(&io.outputs, o.right));
         if bus.outputs.len() != before {
             issues.push(plan::Issue {
                 code: "output_disconnected",
                 path: format!("/buses/{b}/outputs"),
-                message: format!("Uma saída de \"{}\" não está conectada.", bus.name),
+                message: format!("Uma saída de \"{}\" não existe na configuração de áudio atual.", bus.name),
+            });
+        }
+        if bus.outputs.iter().any(|o| offline(&io.outputs, o.left)) {
+            issues.push(plan::Issue {
+                code: "output_offline",
+                path: format!("/buses/{b}/outputs"),
+                message: format!("O aparelho de saída de \"{}\" está fora do ar.", bus.name),
             });
         }
     }
@@ -176,7 +210,7 @@ impl Store {
         let fresh = persisted.is_none();
         let Persisted { mixer, scenes, .. } =
             persisted.unwrap_or_else(|| Persisted { format: STATE_FORMAT, mixer: default_mixer(&io), scenes: BTreeMap::new() });
-        let (rt, disconnected) = runtime_config(&mixer, &layout);
+        let (rt, disconnected) = runtime_config(&mixer, &io);
         let (plan, mut validation) = match compile(&rt, &layout) {
             Ok(x) => x,
             Err(v) => {
@@ -193,13 +227,51 @@ impl Store {
         (store, engine)
     }
 
-    pub fn meters(&self) -> &std::sync::Arc<Meters> {
-        &self.engine.meters
+    pub fn meters(&self) -> std::sync::Arc<Meters> {
+        self.engine.meters.clone()
+    }
+
+    /// Troca a lista de canais (nova configuração de áudio) e cria um motor novo
+    /// com o mix atual. O motor antigo deve ter sido parado antes.
+    pub fn rebuild(&mut self, io: IoLayout, layout: Layout) -> Engine {
+        let (rt, disconnected) = runtime_config(&self.mixer, &io);
+        let (plan, mut validation) = match compile(&rt, &layout) {
+            Ok(x) => x,
+            Err(v) => (Plan::empty(), v),
+        };
+        validation.warnings.extend(disconnected);
+        let (engine, handle) = Engine::new(layout.clone(), plan);
+        self.engine = handle;
+        self.io = io;
+        self.layout = layout;
+        self.validation = validation;
+        self.rev += 1;
+        engine
+    }
+
+    /// Atualiza nome e estado de um canal de rede (bridge ligou ou saiu) sem
+    /// mexer no motor.
+    pub fn set_net_port(&mut self, slot: usize, name: Option<&str>) {
+        for c in 0..2 {
+            let idx = crate::audio::NET_BASE + 2 * slot + c;
+            let side = if c == 0 { "L" } else { "R" };
+            let label = match name {
+                Some(n) => format!("{n} {side}"),
+                None => format!("Rede {} {side}", slot + 1),
+            };
+            for list in [&mut self.io.inputs, &mut self.io.outputs] {
+                if let Some(p) = list.get_mut(idx) {
+                    p.name = label.clone();
+                    p.connected = name.is_some();
+                }
+            }
+        }
+        self.rev += 1;
     }
 
     /// Valida, compila e entrega a nova configuração ao motor.
     pub fn commit(&mut self, next: MixerConfig) -> Result<(), PatchError> {
-        let (rt, disconnected) = runtime_config(&next, &self.layout);
+        let (rt, disconnected) = runtime_config(&next, &self.io);
         let (plan, mut v) = compile(&rt, &self.layout).map_err(PatchError::Rejected)?;
         if let Err(_p) = self.engine.submit(plan) {
             return Err(PatchError::Invalid("O motor de áudio não está recebendo mudanças.".into()));

@@ -39,7 +39,7 @@ export interface BusConfig {
 }
 
 export interface MixerConfig { version: number; channels: ChannelConfig[]; buses: BusConfig[] }
-export interface Port { name: string; device: string; domain: number; connected: boolean }
+export interface Port { index: number; name: string; device: string; domain: number; present: boolean; connected: boolean }
 export interface Issue { code: string; path: string; message: string }
 
 export interface ServerState {
@@ -61,6 +61,7 @@ export interface EngineStatus {
   input_starved: number;
   blocks: number;
   clients: number;
+  devices?: { role: string; name: string; label: string; connected: boolean; error: string | null; drift_ppm: number | null; latency_ms: number | null; underruns: number; overruns: number }[];
 }
 
 export const BUS_KIND_LABEL: Record<BusKind, string> = {

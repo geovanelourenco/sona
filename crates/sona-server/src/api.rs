@@ -5,6 +5,8 @@
 //! direto sem ela); pedido de outro computador só passa com acesso remoto ligado
 //! e token de sessão remota.
 
+use crate::audio::config::AudioConfig;
+use crate::audio::host::AudioHost;
 use crate::audio::EngineStats;
 use crate::auth::{Auth, Scope};
 use crate::state::Store;
@@ -28,7 +30,11 @@ pub struct App {
     pub store: Mutex<Store>,
     pub auth: Mutex<Auth>,
     pub stats: Arc<EngineStats>,
-    pub device: String,
+    pub host: Mutex<Option<AudioHost>>,
+    pub audio: Mutex<AudioConfig>,
+    audio_path: std::path::PathBuf,
+    /// Aumenta a cada reconstrução do motor (sessões de rede pegam vagas novas).
+    pub generation: AtomicU64,
     pub tx: broadcast::Sender<Arc<str>>,
     pub sessions: AtomicU64,
     pub clients: AtomicU64,
@@ -44,13 +50,24 @@ const LOCKOUT: Duration = Duration::from_secs(60);
 pub type Shared = Arc<App>;
 
 impl App {
-    pub fn new(store: Store, auth: Auth, stats: Arc<EngineStats>, device: String, lan_urls: Vec<String>) -> Shared {
+    pub fn new(
+        store: Store,
+        auth: Auth,
+        stats: Arc<EngineStats>,
+        host: AudioHost,
+        audio: AudioConfig,
+        audio_path: std::path::PathBuf,
+        lan_urls: Vec<String>,
+    ) -> Shared {
         let (tx, _) = broadcast::channel(256);
         Arc::new(App {
             store: Mutex::new(store),
             auth: Mutex::new(auth),
             stats,
-            device,
+            host: Mutex::new(Some(host)),
+            audio: Mutex::new(audio),
+            audio_path,
+            generation: AtomicU64::new(0),
             tx,
             sessions: AtomicU64::new(0),
             clients: AtomicU64::new(0),
@@ -59,16 +76,45 @@ impl App {
         })
     }
 
-    fn broadcast_state(&self, by: u64) {
+    pub fn broadcast_state(&self, by: u64) {
         let snap = self.store.lock().unwrap().snapshot();
         let msg = json!({ "type": "state", "by": by, "state": snap }).to_string();
         let _ = self.tx.send(msg.into());
     }
 
     pub fn engine_status(&self) -> Value {
-        let mut v = self.stats.snapshot(&self.device);
+        let (name, devices) = match self.host.lock().unwrap().as_ref() {
+            Some(h) => (h.primary_name(), serde_json::to_value(h.status()).unwrap_or_default()),
+            None => ("parado".to_string(), Value::Array(vec![])),
+        };
+        let mut v = self.stats.snapshot(&name);
         v["clients"] = self.clients.load(Relaxed).into();
+        v["devices"] = devices;
         v
+    }
+
+    /// Vagas de rede do motor atual.
+    pub fn net_slots(&self) -> Vec<Arc<crate::audio::netslot::NetSlot>> {
+        self.host.lock().unwrap().as_ref().map(|h| h.slots.clone()).unwrap_or_default()
+    }
+
+    /// Troca a configuração de áudio: para os aparelhos, remonta os canais,
+    /// cria um motor novo com o mix atual e liga de novo. Bloqueante (~1 s).
+    pub fn apply_audio(&self, cfg: AudioConfig) -> Result<(), String> {
+        cfg.validate()?;
+        cfg.save(&self.audio_path).map_err(|e| format!("Não consegui salvar: {e}"))?;
+        if let Some(old) = self.host.lock().unwrap().take() {
+            old.shutdown();
+        }
+        let (io, pin, pout, perr) = crate::audio::host::plan_io(&cfg);
+        let layout = io.to_layout(cfg.sample_rate, cfg.block);
+        let engine = self.store.lock().unwrap().rebuild(io, layout);
+        let host = AudioHost::start(&cfg, engine, (pin, pout), perr, self.stats.clone());
+        *self.host.lock().unwrap() = Some(host);
+        *self.audio.lock().unwrap() = cfg;
+        self.generation.fetch_add(1, Relaxed);
+        self.broadcast_state(0);
+        Ok(())
     }
 }
 
@@ -79,6 +125,7 @@ pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
         .route("/api/login", axum::routing::post(login))
         .route("/api/state", get(state))
         .route("/api/devices", get(devices))
+        .route("/api/audio", get(audio_get).post(audio_set))
         .route("/api/ws", get(ws));
     let api = match web_dir {
         Some(dir) if dir.join("index.html").exists() => {
@@ -277,6 +324,39 @@ async fn devices(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<Socke
     }
 }
 
+async fn audio_get(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    match authed(&app, bearer(&headers), &peer) {
+        Ok(_) => {
+            let cfg = app.audio.lock().unwrap().clone();
+            let status = app.host.lock().unwrap().as_ref().map(|h| h.status()).unwrap_or_default();
+            Json(json!({ "config": cfg, "status": status })).into_response()
+        }
+        Err(r) => r,
+    }
+}
+
+async fn audio_set(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(cfg): Json<AudioConfig>,
+) -> Response {
+    let name = match authed(&app, bearer(&headers), &peer) {
+        Ok((n, _)) => n,
+        Err(r) => return r,
+    };
+    let app2 = app.clone();
+    match tokio::task::spawn_blocking(move || app2.apply_audio(cfg)).await {
+        Ok(Ok(())) => {
+            tracing::info!("{name} trocou a configuração de áudio.");
+            let status = app.host.lock().unwrap().as_ref().map(|h| h.status()).unwrap_or_default();
+            Json(json!({ "ok": true, "status": status })).into_response()
+        }
+        Ok(Err(e)) => deny(StatusCode::BAD_REQUEST, &e),
+        Err(_) => deny(StatusCode::INTERNAL_SERVER_ERROR, "Falha ao trocar a configuração de áudio."),
+    }
+}
+
 #[derive(Deserialize)]
 struct WsQuery {
     token: Option<String>,
@@ -419,13 +499,14 @@ async fn session(app: Shared, socket: WebSocket, name: String, token: String) {
 /// Medidores a 20 Hz e estado do motor a 1 Hz para todos os clientes.
 pub fn spawn_meter_task(app: Shared) {
     tokio::spawn(async move {
-        let meters = app.store.lock().unwrap().meters().clone();
         let mut tick = tokio::time::interval(Duration::from_millis(50));
         let mut n = 0u64;
         let r = |v: f32| ((v as f64) * 10_000.0).round() / 10_000.0;
         loop {
             tick.tick().await;
             n += 1;
+            // Pega a cada vez: o motor pode ter sido reconstruído.
+            let meters = app.store.lock().unwrap().meters();
             if app.tx.receiver_count() == 0 {
                 // Ninguém olhando: zera os picos e segue (o áudio não para).
                 for m in &meters.channel_peak {
@@ -446,6 +527,22 @@ pub fn spawn_meter_task(app: Shared) {
             let _ = app.tx.send(json!({"type": "meters", "ch": ch, "gr": gr, "gate": gate, "bus": bus, "lim": lim}).to_string().into());
             if n.is_multiple_of(20) {
                 let _ = app.tx.send(json!({"type": "engine", "engine": app.engine_status()}).to_string().into());
+            }
+        }
+    });
+}
+
+/// Reconstrói o motor quando o gerenciador pede (principal apareceu depois).
+pub fn spawn_rebuild_watch(app: Shared) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let want = app.host.lock().unwrap().as_ref().is_some_and(|h| h.rebuild.swap(false, Relaxed));
+            if want {
+                let cfg = app.audio.lock().unwrap().clone();
+                let app2 = app.clone();
+                let _ = tokio::task::spawn_blocking(move || app2.apply_audio(cfg)).await;
             }
         }
     });

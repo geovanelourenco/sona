@@ -67,3 +67,14 @@ desligamento derrubam a sessão remota aberta. Telas: `primeira-configuracao.png
 e `configuracoes.png` (tiradas por 127.0.0.1: o Chromium deste container recebe
 403 da camada de rede do sandbox no WebSocket para IPs que não são loopback;
 Node e curl não têm esse problema). Repetir de outro computador na rede da igreja.
+
+## Vários dispositivos (2026-11-24)
+
+- `cargo test -p sona-core --test drift`: 4/4 (ver ADR 0007).
+- `cargo test -p sona-server --test multidevice`: tom por três relógios,
+  SNR 63,8 dB, deriva corrigida +83,8 ppm (entrada, real +80) e +120,4 ppm
+  (saída, real −120 no consumidor), 0 falhas.
+- Servidor real: troca ao vivo para relógio interno + saída no ALSA "null" +
+  entrada inexistente. A saída abriu; a entrada ficou "não encontrado" sem
+  derrubar nada. As falhas e a deriva medidas no "null" não valem (ele não
+  segue relógio). Tela: `screenshots/audio.png`.

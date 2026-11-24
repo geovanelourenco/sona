@@ -6,6 +6,7 @@ import { Console } from './Console';
 import { Header, type View } from './Header';
 import { Login } from './Login';
 import { Routing } from './Routing';
+import { AudioSetup } from './AudioSetup';
 import { Settings } from './Settings';
 import { Setup } from './Setup';
 import { cx } from './kit';
@@ -95,7 +96,7 @@ export function App() {
             Sem conexão com o servidor. O áudio continua no servidor; reconectando…
           </div>
         )}
-        {view === 'mesa' ? <Console /> : <Routing />}
+        {view === 'mesa' ? <Console /> : view === 'rotas' ? <Routing /> : <AudioSetup />}
         {settings && (
           <Settings
             onClose={() => {

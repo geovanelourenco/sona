@@ -15,9 +15,11 @@ export function sourceLabel(ch: ChannelConfig, st: ServerState): { text: string;
   if (s.kind === 'none') return { text: 'sem fonte', missing: false };
   const a = s.kind === 'mono' ? s.input : s.left;
   const pa = ports[a];
-  if (!pa) return { text: `entrada ${a + 1} ausente`, missing: true };
-  if (s.kind === 'mono') return { text: pa.name, missing: !pa.connected };
-  return { text: pa.name.replace(/ L$/, '') + ' L/R', missing: !pa.connected };
+  if (!pa || !pa.present) return { text: `entrada ${a + 1} ausente`, missing: true };
+  // Vaga de rede sem bridge não é falha: só está esperando.
+  const net = pa.device === 'Sona Bridge';
+  const name = s.kind === 'mono' ? pa.name : pa.name.replace(/ L$/, '') + ' L/R';
+  return { text: net && !pa.connected ? `${name} (aguardando)` : name, missing: !pa.connected && !net };
 }
 
 /** Atualiza sends trocando (ou criando) o envio para um bus. */
