@@ -35,6 +35,7 @@ pub struct App {
     audio_path: std::path::PathBuf,
     /// Aumenta a cada reconstrução do motor (sessões de rede pegam vagas novas).
     pub generation: AtomicU64,
+    pub net: std::sync::OnceLock<Arc<crate::net::Hub>>,
     pub tx: broadcast::Sender<Arc<str>>,
     pub sessions: AtomicU64,
     pub clients: AtomicU64,
@@ -68,6 +69,7 @@ impl App {
             audio: Mutex::new(audio),
             audio_path,
             generation: AtomicU64::new(0),
+            net: std::sync::OnceLock::new(),
             tx,
             sessions: AtomicU64::new(0),
             clients: AtomicU64::new(0),
@@ -90,7 +92,42 @@ impl App {
         let mut v = self.stats.snapshot(&name);
         v["clients"] = self.clients.load(Relaxed).into();
         v["devices"] = devices;
+        v["bridges"] = self.bridges_status();
         v
+    }
+
+    /// Bridges ligados: vaga, nome, pacotes, perdas, deriva e atraso.
+    pub fn bridges_status(&self) -> Value {
+        let Some(hub) = self.net.get() else { return Value::Array(vec![]) };
+        let slots = self.net_slots();
+        let sr = self.audio.lock().unwrap().sample_rate as f64;
+        let mut list: Vec<Value> = hub
+            .links
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&i, (name, st, since))| {
+                let ds = slots.get(i).map(|s| s.stats.clone());
+                json!({
+                    "slot": i,
+                    "name": name,
+                    "seconds": since.elapsed().as_secs(),
+                    "packets_in": st.packets_in.load(Relaxed),
+                    "packets_out": st.packets_out.load(Relaxed),
+                    "lost": st.lost.load(Relaxed),
+                    "late": st.late.load(Relaxed),
+                    "drift_ppm": ds.as_ref().map(|d| (d.correction_ppm() * 10.0).round() / 10.0),
+                    "latency_ms": ds.as_ref().map(|d| (d.fill_frames.load(Relaxed) as f64 / sr * 10_000.0).round() / 10.0),
+                    "underruns": ds.as_ref().map(|d| d.underruns.load(Relaxed)),
+                })
+            })
+            .collect();
+        list.sort_by_key(|v| v["slot"].as_u64());
+        Value::Array(list)
+    }
+
+    pub fn data_dir(&self) -> std::path::PathBuf {
+        self.audio_path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
     }
 
     /// Vagas de rede do motor atual.
@@ -126,7 +163,8 @@ pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
         .route("/api/state", get(state))
         .route("/api/devices", get(devices))
         .route("/api/audio", get(audio_get).post(audio_set))
-        .route("/api/ws", get(ws));
+        .route("/api/ws", get(ws))
+        .route("/api/bridge", get(bridge_ws));
     let api = match web_dir {
         Some(dir) if dir.join("index.html").exists() => {
             let index = dir.join("index.html");
@@ -360,6 +398,21 @@ async fn audio_set(
 #[derive(Deserialize)]
 struct WsQuery {
     token: Option<String>,
+}
+
+async fn bridge_ws(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Query(q): Query<WsQuery>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    match authed(&app, q.token.as_deref(), &peer) {
+        Ok(_) => {
+            let token = q.token.unwrap_or_default();
+            upgrade.on_upgrade(move |socket| crate::net::bridge_session(app, socket, peer, token))
+        }
+        Err(r) => r,
+    }
 }
 
 async fn ws(

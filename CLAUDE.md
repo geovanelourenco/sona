@@ -18,5 +18,5 @@ Verificação completa:
 ```bash
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 (cd apps/mixer-web && npm run typecheck && npm test && npm run build)
-cargo build --release -p sona-server && node tests/e2e/acceptance.mjs
+cargo build --release -p sona-server -p sona-bridge && node tests/e2e/acceptance.mjs
 ```

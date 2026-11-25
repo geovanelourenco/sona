@@ -6,8 +6,10 @@ use sona_core::drift::{DriftStats, Reader, Writer};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
-/// Atraso alvo da fila de entrada de rede (absorve jitter da LAN).
-pub const NET_TARGET_MS: f64 = 20.0;
+/// Atraso alvo da fila de entrada de rede (absorve jitter da LAN). Cresce
+/// sozinho até `NET_TARGET_MAX_MS` se a fila esvaziar (Wi-Fi ruim).
+pub const NET_TARGET_MS: f64 = 12.0;
+pub const NET_TARGET_MAX_MS: f64 = 80.0;
 
 /// Lado de rede de uma vaga, emprestado à sessão do bridge.
 pub struct NetEnds {
@@ -32,7 +34,8 @@ pub struct NetRt {
 }
 
 pub fn make(index: usize, sample_rate: u32) -> (Arc<NetSlot>, NetRt) {
-    let (writer, reader, stats) = sona_core::drift::bridge(2, sample_rate as f64, NET_TARGET_MS);
+    let (writer, mut reader, stats) = sona_core::drift::bridge(2, sample_rate as f64, NET_TARGET_MS);
+    reader.set_adaptive(NET_TARGET_MAX_MS);
     // 0,5 s de saída: se ninguém estiver lendo, a fila enche e o motor descarta.
     let (prod, cons) = rtrb::RingBuffer::new(sample_rate as usize);
     let slot = Arc::new(NetSlot {

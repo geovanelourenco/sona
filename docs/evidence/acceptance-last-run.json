@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-24T23:39:59.931Z",
+  "at": "2026-11-25T00:10:01.210Z",
   "platform": "linux",
   "results": [
     {
@@ -69,12 +69,27 @@
     },
     {
       "id": "FR-12",
-      "name": "muitas senhas erradas bloqueiam o IP por um tempo",
+      "name": "desligar o acesso remoto derruba todos os remotos",
+      "ok": true
+    },
+    {
+      "id": "FR-08",
+      "name": "bridge envia e recebe ao mesmo tempo, pela rede, com deriva de 120 ppm",
+      "ok": true
+    },
+    {
+      "id": "FR-11",
+      "name": "bridge reconecta sozinho quando a configuração de áudio do servidor muda",
       "ok": true
     },
     {
       "id": "FR-12",
-      "name": "desligar o acesso remoto derruba todos os remotos",
+      "name": "desligar o acesso remoto tira o bridge e ele pede a senha de novo",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "muitas senhas erradas bloqueiam o IP por um tempo",
       "ok": true
     },
     {

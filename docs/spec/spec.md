@@ -10,8 +10,8 @@ controlada, inspirada no ASD-STE100 (sem alegação de conformidade formal).
 | Núcleo de áudio (DSP, grafo, motor) | `crates/sona-core` | implementado, testado |
 | Servidor de áudio | `crates/sona-server` | implementado com dispositivo simulado; hardware compilado, não validado |
 | Console web | `apps/mixer-web` | implementado |
-| Bridge nativo | `apps/bridge` | fase 3 |
-| Transporte de rede | `crates/sona-net` | fase 3 |
+| Sona Bridge | `crates/sona-bridge` (+ `apps/mixer-web/bridge.html`) | implementado; LAN real pendente |
+| Transporte de rede | `crates/sona-net` | implementado (ADR 0003) |
 
 ## 2. Caminho do sinal
 
@@ -94,6 +94,7 @@ HTTP:
 | `POST /api/access` | sim | `app_password`, `remote_password` (texto ou `null`), `finish_setup` |
 | `GET /api/state` | sim | estado |
 | `GET /api/devices` | sim | dispositivos de áudio do sistema |
+| `GET /api/bridge` (WebSocket) | sim | controle do Sona Bridge (ADR 0003) |
 | `GET /api/audio` / `POST /api/audio` | sim | configuração de áudio e estado de cada aparelho; aplicar reabre os aparelhos (~1 s sem som) |
 
 Interface estática na raiz (servida também para a rede, para mostrar a tela de

@@ -12,7 +12,7 @@ Máquina: Intel Xeon @ 2,30 GHz, 4 vCPU, Linux 6.18, sem prioridade de tempo rea
 |---|---|
 | `cargo test -p sona-core` (dsp, routing, realtime) | 29/29 |
 | `npm test` em `apps/mixer-web` | 6/6 |
-| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 17/17 — ver `acceptance-last-run.json` |
+| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 20/20 — ver `acceptance-last-run.json` |
 | `cargo test -p sona-server` (senhas e sessões) | 4/4 |
 
 ### Custo do motor (`sona-server bench --seconds 20`, release)
@@ -78,3 +78,17 @@ Node e curl não têm esse problema). Repetir de outro computador na rede da igr
   entrada inexistente. A saída abriu; a entrada ficou "não encontrado" sem
   derrubar nada. As falhas e a deriva medidas no "null" não valem (ele não
   segue relógio). Tela: `screenshots/audio.png`.
+
+## Sona Bridge (2026-11-25)
+
+- `cargo test -p sona-net`: 3/3 (HMAC confere com a RFC 4231, PCM 24 bits ida
+  e volta, pacote forjado recusado).
+- e2e (bridge pelo IP de rede do container, senha remota, aparelhos simulados a
+  +120 ppm): ida e volta 28,1 ms, 0 perdas nos dois sentidos, 0 falhas de áudio
+  no servidor, nível 0,554 (tom de 0,5 + sinal de teste da mesa simulada).
+  Sem rede física: não vale como medição de LAN.
+- A estimativa de deriva no e2e varia (73 a 469 ppm entre execuções) porque os
+  relógios do container são de software e perdem blocos sob carga; a precisão
+  da estimativa está nos testes determinísticos.
+- Telas: `screenshots/bridge-entrada.png`, `screenshots/bridge.png` (a saída
+  escolhida na foto é o ALSA "null", por isso as falhas e a deriva mostradas).

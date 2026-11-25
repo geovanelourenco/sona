@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const bin = join(root, 'target', 'release', process.platform === 'win32' ? 'sona-server.exe' : 'sona-server');
+const exe = process.platform === 'win32' ? '.exe' : '';
+const bin = join(root, 'target', 'release', 'sona-server' + exe);
+const bridgeBin = join(root, 'target', 'release', 'sona-bridge' + exe);
 const data = mkdtempSync(join(tmpdir(), 'sona-e2e-'));
 const PORT = 7399;
 const base = `http://127.0.0.1:${PORT}`;
@@ -207,6 +209,8 @@ await check('FR-07', 'PFL do operador A só muda o fone dele', async () => {
   assert.ok(peak(4) > 0.01, 'fone 2 segue a transmissão');
   assert.ok(peak(3) > 0.001, `fone 1 toca o canal em PFL com o fader fechado (${peak(3)})`);
   a.send({ type: 'patch', path: '/buses/3/monitor', value: { solo: [] } });
+  a.send({ type: 'patch', path: '/channels/0', value: { fader_db: -90 } });
+  a.send({ type: 'patch', path: '/channels/1', value: { fader_db: -90 } });
   await sleep(100);
   a.ws.close();
 });
@@ -233,11 +237,6 @@ await check('seg.', 'ciclo entre buses é recusado e o estado não muda', async 
 });
 
 
-await check('FR-12', 'muitas senhas erradas bloqueiam o IP por um tempo', async () => {
-  for (let i = 0; i < 5; i++) await login('chute-' + i, lanBase);
-  assert.equal((await login('culto-noite', lanBase)).status, 429, 'bloqueado mesmo com a senha certa');
-});
-
 await check('FR-12', 'desligar o acesso remoto derruba todos os remotos', async () => {
   const c = await client(remoteToken, lanHost);
   const revoked = c.until((m) => m.type === 'revoked', 4000);
@@ -245,6 +244,101 @@ await check('FR-12', 'desligar o acesso remoto derruba todos os remotos', async 
   await revoked;
   assert.equal((await access()).remote_enabled, false);
   assert.equal((await update(admin, { remote_password: 'culto-noite' })).status, 200, 'religa para os próximos testes');
+});
+
+
+// ── Sona Bridge pela rede (IP da rede + senha remota), aparelhos simulados ──
+const BRIDGE_PORT = 7398;
+const bridgeStatus = async () => (await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/status`)).json();
+const waitFor = async (pred, ms = 15000) => {
+  const t0 = Date.now();
+  let last;
+  while (Date.now() - t0 < ms) {
+    try {
+      last = await bridgeStatus();
+      if (pred(last)) return last;
+    } catch {}
+    await sleep(250);
+  }
+  throw new Error('bridge não chegou ao estado esperado: ' + JSON.stringify(last));
+};
+const bridgeData = mkdtempSync(join(tmpdir(), 'sona-bridge-'));
+const br = spawn(bridgeBin, ['--data', bridgeData, '--port', String(BRIDGE_PORT), '--server', lanHost, '--password', 'culto-noite', '--name', 'OBS', '--send', 'sim', '--receive', 'sim', '--sim-ppm', '120'], { env: { ...process.env, NO_COLOR: '1' } });
+let brLog = '';
+br.stdout.on('data', (d) => (brLog += d));
+br.stderr.on('data', (d) => (brLog += d));
+
+await check('FR-08', 'bridge envia e recebe ao mesmo tempo, pela rede, com deriva de 120 ppm', async () => {
+  // Abre o canal da rede em 0 dB para medir nível.
+  const a = await client(admin);
+  const ch = a.state.mixer.channels.findIndex((c) => c.source.kind === 'stereo' && c.source.left === 96);
+  assert.ok(ch >= 0, 'canal da vaga de rede 1 existe');
+  a.send({ type: 'patch', path: `/channels/${ch}`, value: { fader_db: 0 } });
+  let st;
+  try {
+    st = await waitFor((s) => s.state === 'conectado' && s.sim_measurements >= 6 && s.server_view?.packets_in > 1000, 25000);
+  } catch (e) {
+    const m = await a.until((m) => m.type === 'meters');
+    console.log('DEBUG canal', ch, JSON.stringify(a.state.mixer.channels[ch]), 'medidor canal', m.ch[ch], 'bus', JSON.stringify(m.bus), 'buses', JSON.stringify(a.state.mixer.buses.map((b) => [b.name, b.fader_db, b.mute, b.outputs, b.monitor])));
+    throw e;
+  }
+  // Pico ao longo de 2 s (o tom liga e desliga a cada 0,5 s).
+  let peak = 0;
+  for (let i = 0; i < 8; i++) {
+    await sleep(250);
+    peak = Math.max(peak, (await bridgeStatus()).recv_peak);
+  }
+  const s2 = await bridgeStatus();
+  s2.recv_peak = peak;
+  console.log(`      ida e volta ${s2.sim_latency_ms} ms; servidor corrige ${s2.server_view.drift_ppm} ppm; bridge corrige ${s2.drift_ppm} ppm; perdas ${s2.lost_in}/${s2.server_view.lost}; nível ${s2.recv_peak.toFixed(3)}`);
+  assert.equal(st.slot, 0);
+  assert.equal(s2.lost_in, 0);
+  assert.equal(s2.server_view.lost, 0);
+  assert.equal(s2.server_view.underruns, 0, 'servidor sem falhas de áudio do bridge');
+  assert.ok(s2.sim_latency_ms > 5 && s2.sim_latency_ms < 80, `ida e volta ${s2.sim_latency_ms} ms`);
+  // A precisão da estimativa de deriva é provada nos testes determinísticos
+  // (crates/sona-core/tests/drift.rs). Aqui os relógios são de software num
+  // container compartilhado (perdem blocos sob carga), então só se exige que a
+  // correção esteja dentro do limite e que não haja falhas.
+  assert.ok(Math.abs(s2.server_view.drift_ppm) < 2000 && s2.server_view.drift_ppm > 0, `correção do servidor ${s2.server_view.drift_ppm} ppm`);
+  assert.ok(Math.abs(s2.server_view.latency_ms - 12) < 8, `atraso da fila no servidor ${s2.server_view.latency_ms} ms`);
+  assert.ok(s2.recv_peak > 0.4 && s2.recv_peak < 0.6, `nível recebido ${s2.recv_peak}`);
+  // O console mostra o bridge pelo nome.
+  const h = await (await fetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  assert.equal(h.io.inputs[96].name, 'OBS L');
+  assert.equal(h.io.inputs[96].connected, true);
+  a.ws.close();
+});
+
+await check('FR-11', 'bridge reconecta sozinho quando a configuração de áudio do servidor muda', async () => {
+  const before = (await bridgeStatus()).packets_in;
+  const r = await fetch(`${base}/api/audio`, { headers: { Authorization: `Bearer ${admin}` } });
+  const { config } = await r.json();
+  const apply = await fetch(`${base}/api/audio`, { method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...config, block: 256 }) });
+  assert.equal(apply.status, 200);
+  await sleep(1500);
+  const s = await waitFor((s) => s.state === 'conectado' && s.packets_in > 200, 20000);
+  assert.equal(s.slot, 0, 'mesma vaga depois de reconectar');
+  void before;
+});
+
+await check('FR-12', 'desligar o acesso remoto tira o bridge e ele pede a senha de novo', async () => {
+  assert.equal((await update(admin, { remote_password: null })).status, 200);
+  const s = await waitFor((s) => s.state === 'senha', 15000);
+  assert.match(s.message, /senha|Entre/);
+  assert.equal((await update(admin, { remote_password: 'culto-noite' })).status, 200);
+});
+if (br.exitCode === null) {
+  br.kill('SIGINT');
+  await new Promise((r) => br.on('exit', r));
+} else if (results.some((r) => !r.ok && r.id === 'FR-08')) {
+  console.log(brLog);
+}
+
+// Por último antes do reinício: bloqueia o IP da rede por 60 s.
+await check('FR-12', 'muitas senhas erradas bloqueiam o IP por um tempo', async () => {
+  for (let i = 0; i < 5; i++) await login('chute-' + i, lanBase);
+  assert.equal((await login('culto-noite', lanBase)).status, 429, 'bloqueado mesmo com a senha certa');
 });
 
 // FR-10: reinício restaura; fonte que sumiu fica visível como desconectada.

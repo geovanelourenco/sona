@@ -75,7 +75,7 @@ Desenvolvimento da interface com recarga: `npm run dev` em `apps/mixer-web`
 ```bash
 cargo test                                   # DSP, roteamento, regra de tempo real
 cd apps/mixer-web && npm test                # curva do fader e do EQ
-cargo build --release -p sona-server && node tests/e2e/acceptance.mjs
+cargo build --release -p sona-server -p sona-bridge && node tests/e2e/acceptance.mjs
 ```
 
 ## Estrutura

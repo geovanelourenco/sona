@@ -16,6 +16,7 @@ hw = ["dep:cpal"]
 
 [dependencies]
 sona-core = { path = "../sona-core" }
+sona-net = { path = "../sona-net" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"] }
 tower-http = { version = "0.7", features = ["fs"] }

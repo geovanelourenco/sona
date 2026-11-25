@@ -1,0 +1,30 @@
+[package]
+name = "sona-bridge"
+description = "Sona Bridge: envia e recebe áudio do servidor Sona pela rede."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sona-bridge"
+path = "src/main.rs"
+
+[features]
+default = ["hw"]
+hw = ["dep:cpal"]
+
+[dependencies]
+sona-core = { path = "../sona-core" }
+sona-net = { path = "../sona-net" }
+cpal = { version = "0.18", optional = true }
+rtrb = "0.3"
+tungstenite = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tower-http = { version = "0.7", features = ["fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"

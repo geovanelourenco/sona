@@ -65,6 +65,8 @@ pub struct Reader {
     pos: f64,
     playing: bool,
     target: f64,
+    /// Teto do alvo quando ele cresce sozinho após falhas (rede). 0 = fixo.
+    adaptive_max: f64,
     fill_ema: f64,
     integral: f64,
     ratio: f64,
@@ -95,6 +97,7 @@ pub fn bridge(channels: usize, sample_rate: f64, target_ms: f64) -> (Writer, Rea
             pos: 0.0,
             playing: false,
             target,
+            adaptive_max: 0.0,
             fill_ema: 0.0,
             integral: 0.0,
             ratio: 1.0,
@@ -179,6 +182,11 @@ impl Writer {
 impl Reader {
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// Em rede: a cada fila vazia o alvo cresce 25 %, até `max_ms`.
+    pub fn set_adaptive(&mut self, max_ms: f64) {
+        self.adaptive_max = max_ms * 0.001 * self.sample_rate;
     }
 
     /// Alvo atual da fila em ms (o pedido, ou mais se os blocos forem maiores).
@@ -300,6 +308,9 @@ impl Reader {
                 if !self.advance() {
                     self.stats.underruns.fetch_add(1, Relaxed);
                     self.playing = false;
+                    if self.adaptive_max > self.target {
+                        self.target = (self.target * 1.25).min(self.adaptive_max);
+                    }
                     for o in out.iter_mut() {
                         let n = frames.min(o.len());
                         if i < n {
