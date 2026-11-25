@@ -28,7 +28,8 @@ navegador. A janela só carrega a página local (sem IPC do Tauri na página).
 ## Instaladores
 
 `.github/workflows/desktop.yml` gera os dois instaladores num runner Windows
-a cada push (artefato "instaladores-windows"). Os instaladores não são
+a cada push e publica numa Release de pré-lançamento `instaladores-<branch>`
+(artefatos do Actions esbarraram na cota de armazenamento da conta). Os instaladores não são
 assinados: o Windows SmartScreen avisa na primeira execução ("Mais
 informações" → "Executar assim mesmo"). Assinatura de código fica para quando
 houver certificado.

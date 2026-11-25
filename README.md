@@ -30,8 +30,9 @@ O Sona é independente. A integração com o [Lumo](https://github.com/geovanelo
 
 ## Instalar (Windows)
 
-Baixe os instaladores no GitHub Actions (workflow "Instaladores Windows",
-artefato `instaladores-windows`):
+Baixe os instaladores na página **Releases** do repositório (pré-lançamento
+"Instaladores (main)" ou do branch em teste), gerados pelo workflow
+"Instaladores Windows":
 
 - **Sona** (`Sona_…_x64-setup.exe`): no computador ligado à Ui24R. Abrir o app
   liga o servidor; fechar a janela deixa o áudio rodando na bandeja. Marque
