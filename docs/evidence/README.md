@@ -92,3 +92,11 @@ Node e curl não têm esse problema). Repetir de outro computador na rede da igr
   da estimativa está nos testes determinísticos.
 - Telas: `screenshots/bridge-entrada.png`, `screenshots/bridge.png` (a saída
   escolhida na foto é o ALSA "null", por isso as falhas e a deriva mostradas).
+
+## Instaladores Windows (2026-11-25)
+
+Workflow "Instaladores Windows" (runner `windows-latest`, execução 3): build do
+Tauri e NSIS com sucesso; `Sona_0.1.0_x64-setup.exe` (3,6 MB) e
+`Sona Bridge_0.1.0_x64-setup.exe` (3,3 MB) publicados na Release de
+pré-lançamento `instaladores-multi-dispositivo-bridge`. Compilados, **não
+instalados nem executados** num Windows real ainda.
