@@ -1,0 +1,22 @@
+[package]
+name = "sona-desktop"
+description = "Sona (app desktop): servidor de áudio + console numa janela, na bandeja do sistema."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sona"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+sona-server = { path = "../../../crates/sona-server" }
+tauri = { version = "2.12", features = ["tray-icon"] }
+tauri-plugin-autostart = "2.7"
+tauri-plugin-single-instance = "2.5"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

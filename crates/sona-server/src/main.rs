@@ -134,7 +134,14 @@ fn devices() {
 }
 
 async fn serve(args: ServeArgs) {
-    let opts = sona_server::Options { data: args.data, bind: args.bind, port: args.port, web: Some(args.web), primary: args.device };
+    let opts = sona_server::Options {
+        data: args.data,
+        bind: args.bind,
+        port: args.port,
+        web: Some(args.web),
+        primary: args.device,
+        default_primary: None,
+    };
     let running = match sona_server::start(opts).await {
         Ok(r) => r,
         Err(e) => {

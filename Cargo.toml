@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/sona-core", "crates/sona-net", "crates/sona-server", "crates/sona-bridge"]
+members = ["crates/sona-core", "crates/sona-net", "crates/sona-server", "crates/sona-bridge", "apps/desktop/sona", "apps/desktop/bridge"]
+# Os apps desktop (Tauri) pedem bibliotecas de sistema (WebView); ficam fora do
+# `cargo build/test` padrão. Gerar instaladores: ver .github/workflows/desktop.yml.
+default-members = ["crates/sona-core", "crates/sona-net", "crates/sona-server", "crates/sona-bridge"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,7 +12,8 @@ license = "UNLICENSED"
 rust-version = "1.80"
 
 [profile.release]
-debug = 1
+# Instaladores enxutos: sem informação de depuração no executável.
+strip = true
 
 # Os testes simulam minutos de áudio; sem otimização levariam muito tempo.
 [profile.test]

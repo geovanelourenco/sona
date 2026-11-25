@@ -27,11 +27,20 @@ pub struct Options {
     pub web: Option<PathBuf>,
     /// Troca o dispositivo principal salvo (ex.: "sim", "internal", "Ui24R").
     pub primary: Option<String>,
+    /// Principal da primeira instalação (sem `audio.json`). Padrão: "sim".
+    pub default_primary: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { data: PathBuf::from("data"), bind: None, port: 7340, web: Some(PathBuf::from("apps/mixer-web/dist")), primary: None }
+        Options {
+            data: PathBuf::from("data"),
+            bind: None,
+            port: 7340,
+            web: Some(PathBuf::from("apps/mixer-web/dist")),
+            primary: None,
+            default_primary: None,
+        }
     }
 }
 
@@ -67,7 +76,10 @@ pub async fn start(opts: Options) -> Result<Running, String> {
     let auth = auth::Auth::load(&opts.data.join("auth.json"));
 
     let audio_path = opts.data.join("audio.json");
-    let mut audio_cfg = audio::config::AudioConfig::load(&audio_path).unwrap_or_default();
+    let mut audio_cfg = audio::config::AudioConfig::load(&audio_path).unwrap_or_else(|| audio::config::AudioConfig {
+        primary: opts.default_primary.clone().unwrap_or_else(|| audio::config::PRIMARY_SIM.into()),
+        ..Default::default()
+    });
     if let Some(p) = &opts.primary {
         audio_cfg.primary = p.clone();
     }

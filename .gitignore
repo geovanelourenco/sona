@@ -3,3 +3,4 @@ node_modules/
 /apps/mixer-web/dist
 /data/
 *.wav
+apps/desktop/*/gen/

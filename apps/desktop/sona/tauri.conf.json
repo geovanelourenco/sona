@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sona",
+  "mainBinaryName": "Sona",
+  "version": "0.1.0",
+  "identifier": "app.lumoverso.sona",
+  "build": {
+    "frontendDist": "../../mixer-web/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Lumoverso",
+    "shortDescription": "Mesa de som do Lumoverso",
+    "longDescription": "Sona: mesa de som em software. Mix de transmissão independente, retorno para a mesa física, acesso pela rede e Sona Bridge.",
+    "icon": ["../icons/sona/32x32.png", "../icons/sona/128x128.png", "../icons/sona/128x128@2x.png", "../icons/sona/icon.ico", "../icons/sona/icon.png"],
+    "resources": { "../../mixer-web/dist/": "web/" },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser", "languages": ["PortugueseBR"], "displayLanguageSelector": false }
+    }
+  }
+}

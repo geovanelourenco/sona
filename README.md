@@ -28,7 +28,24 @@ O Sona é independente. A integração com o [Lumo](https://github.com/geovanelo
 - Dispositivos reais via cpal (ASIO/WASAPI/ALSA/JACK/PipeWire/CoreAudio):
   listagem e caminho duplex compilados; duplex só exercitado no ALSA "null".
 
-## Rodar
+## Instalar (Windows)
+
+Baixe os instaladores no GitHub Actions (workflow "Instaladores Windows",
+artefato `instaladores-windows`):
+
+- **Sona** (`Sona_…_x64-setup.exe`): no computador ligado à Ui24R. Abrir o app
+  liga o servidor; fechar a janela deixa o áudio rodando na bandeja. Marque
+  "Iniciar com o Windows" na bandeja para o broadcast funcionar sozinho.
+- **Sona Bridge** (`Sona Bridge_…_x64-setup.exe`): no computador do OBS (e
+  nos de mídia). Informe o endereço e a senha de acesso remoto do servidor,
+  escolha o aparelho que recebe (ex.: "CABLE Input") e, no OBS, capture
+  "CABLE Output".
+
+Os instaladores não são assinados: o SmartScreen avisa na primeira vez
+("Mais informações" → "Executar assim mesmo"). Na primeira execução, permita
+o Sona no firewall (rede privada).
+
+## Rodar a partir do código
 
 Requisitos: Rust 1.80+, Node 22+. No Linux, `libasound2-dev` (ou compile com
 `--no-default-features` para usar só o dispositivo simulado).
@@ -90,5 +107,6 @@ docs/adr/             decisões de arquitetura
 docs/evidence/        medições e resultados de teste
 ```
 
-O bridge nativo (`apps/bridge`) e o transporte de rede (`crates/sona-net`)
-começam na fase 3.
+Também: `crates/sona-net` (protocolo de rede), `crates/sona-bridge` (Sona
+Bridge) e `apps/desktop/` (apps Tauri; `npx @tauri-apps/cli build` dentro de
+`apps/desktop/sona` ou `apps/desktop/bridge`, depois do build da interface).

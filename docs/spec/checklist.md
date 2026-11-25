@@ -41,5 +41,5 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 
 1. Bancada com a Ui24R em Linux e Windows (ADR 0002) — pede acesso ao hardware.
 2. Prioridade de tempo real na thread de áudio e novo bench.
-3. App de desktop que liga o servidor e abre o console (decidir Tauri ou Electron).
+3. Validar os instaladores num Windows real (instalação, firewall, autostart).
 4. Grupos DCA depois que o grafo estiver estável.

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sona Bridge",
+  "mainBinaryName": "Sona Bridge",
+  "version": "0.1.0",
+  "identifier": "app.lumoverso.sona.bridge",
+  "build": {
+    "frontendDist": "../../mixer-web/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "Lumoverso",
+    "shortDescription": "Envia e recebe áudio do Sona pela rede",
+    "longDescription": "Sona Bridge: no computador do OBS recebe a transmissão e toca num cabo virtual; no computador de mídia envia o que toca para o servidor Sona.",
+    "icon": [
+      "../icons/bridge/32x32.png",
+      "../icons/bridge/128x128.png",
+      "../icons/bridge/128x128@2x.png",
+      "../icons/bridge/icon.ico",
+      "../icons/bridge/icon.png"
+    ],
+    "resources": {
+      "../../mixer-web/dist/": "web/"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "PortugueseBR"
+        ],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
