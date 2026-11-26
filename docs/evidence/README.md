@@ -100,3 +100,16 @@ Tauri e NSIS com sucesso; `Sona_0.1.0_x64-setup.exe` (3,6 MB) e
 `Sona Bridge_0.1.0_x64-setup.exe` (3,3 MB) publicados na Release de
 pré-lançamento `instaladores-multi-dispositivo-bridge`. Compilados, **não
 instalados nem executados** num Windows real ainda.
+
+## Plugin do OBS e relógio de software (2026-11-26)
+
+Máquina: Intel Xeon @ 2,10 GHz, 4 vCPU (container novo, mais disputado).
+
+- `tests/obs/run.sh`: libobs 30.0.2 real sob Xvfb; plugin carregado, fonte
+  "Sona (transmissão)" criada, 384 000 quadros em 8 s, pico 0,2506.
+- Defeito achado: o relógio de software (simulado/interno) pulava o tempo
+  quando atrasava mais de um bloco e ficava mais lento que o tempo real (a
+  deriva medida saturava em 2000 ppm). Agora recupera atrasos de até 200 ms.
+- e2e 20/20 em 3 rodadas seguidas; o bridge pode ter 1–2 falhas de fila no
+  arranque nesta máquina (pausas de agendamento), absorvidas pela fila
+  adaptativa; zero falhas depois de adaptada.

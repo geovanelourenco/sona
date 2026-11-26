@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libobs-dev xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -18,3 +18,8 @@ jobs:
       - run: npm ci && npm run typecheck && npm test && npm run build
         working-directory: apps/mixer-web
       - run: cargo build --release -p sona-server -p sona-bridge && node tests/e2e/acceptance.mjs
+      - name: Plugin do OBS com o libobs real
+        run: |
+          cc -I/usr/include/obs -fsyntax-only tests/obs/layout.c
+          cargo build --release -p sona-obs
+          tests/obs/run.sh

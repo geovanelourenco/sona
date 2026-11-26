@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 pub const SIM_INPUTS: usize = 24;
 pub const SIM_OUTPUTS: usize = 10;
+/// Até quanto atraso o relógio recupera processando blocos seguidos.
+const CATCH_UP: Duration = Duration::from_millis(200);
 
 struct Voice {
     phase: f32,
@@ -88,13 +90,16 @@ pub fn start(mut comp: Composite, tones: usize, sample_rate: u32, block: usize, 
                 stats.record(t0.elapsed().as_secs_f64(), budget.as_secs_f64());
                 deadline += budget;
                 let now = Instant::now();
-                if now > deadline + budget {
-                    // Atrasou mais de um bloco: conta e realinha o relógio.
+                if deadline > now {
+                    std::thread::sleep(deadline - now);
+                } else if now - deadline > CATCH_UP {
+                    // Atraso grande (sistema travou): conta e realinha.
                     stats.late_blocks.fetch_add(1, Relaxed);
                     deadline = now;
-                } else if deadline > now {
-                    std::thread::sleep(deadline - now);
                 }
+                // Atraso pequeno: segue sem dormir até recuperar. Assim o
+                // relógio de software anda, em média, no ritmo do tempo real
+                // (pular o atraso o deixaria mais lento que os outros relógios).
             }
             stats.running.store(false, Relaxed);
             comp

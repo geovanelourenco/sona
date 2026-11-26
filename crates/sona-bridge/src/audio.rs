@@ -10,6 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const SIM: &str = "sim";
+/// Recepção para o plugin "Sona" do OBS neste computador (127.0.0.1:7360).
+pub const OBS: &str = "obs";
+/// Prefixo de envio que captura o que toca numa saída do sistema (loopback do
+/// WASAPI no Windows): "loopback:Alto-falantes (Realtek…)". Sem cabo virtual.
+pub const LOOPBACK: &str = "loopback:";
 
 /// Níveis e medições para a tela (sem trava).
 #[derive(Default)]
@@ -90,7 +95,7 @@ pub fn start_send(device: &str, sample_rate: u32, ppm: f64, mut out: rtrb::Produ
                     let now = Instant::now();
                     if deadline > now {
                         std::thread::sleep(deadline - now);
-                    } else if now - deadline > period * 4 {
+                    } else if now - deadline > Duration::from_millis(200) {
                         deadline = now;
                     }
                 }
@@ -108,6 +113,9 @@ pub fn start_send(device: &str, sample_rate: u32, ppm: f64, mut out: rtrb::Produ
 
 /// Liga o aparelho de recepção: lê estéreo de `reader` (com deriva compensada).
 pub fn start_receive(device: &str, sample_rate: u32, ppm: f64, mut reader: Reader, levels: Arc<Levels>) -> Result<Handle, String> {
+    if device == OBS {
+        return start_obs_feed(sample_rate, reader, levels);
+    }
     if device == SIM {
         let stop = Arc::new(AtomicBool::new(false));
         let s2 = stop.clone();
@@ -154,7 +162,7 @@ pub fn start_receive(device: &str, sample_rate: u32, ppm: f64, mut reader: Reade
                     let now = Instant::now();
                     if deadline > now {
                         std::thread::sleep(deadline - now);
-                    } else if now - deadline > period * 4 {
+                    } else if now - deadline > Duration::from_millis(200) {
                         deadline = now;
                     }
                 }
@@ -213,18 +221,23 @@ pub mod hw {
         out
     }
 
-    fn find(name: &str) -> Option<cpal::Device> {
+    /// Acha o aparelho pelo nome; `output` exige que tenha saída (loopback).
+    fn find_with(name: &str, output: bool) -> Option<cpal::Device> {
         for id in cpal::available_hosts() {
             let Ok(host) = cpal::host_from_id(id) else { continue };
             let Ok(devs) = host.devices() else { continue };
             for d in devs {
                 let n = name_of(&d);
-                if n == name || n.contains(name) {
+                if (n == name || n.contains(name)) && (!output || d.supports_output()) {
                     return Some(d);
                 }
             }
         }
         None
+    }
+
+    fn find(name: &str) -> Option<cpal::Device> {
+        find_with(name, false)
     }
 
     fn pick(d: &cpal::Device, input: bool, sr: u32) -> Option<(u16, SampleFormat)> {
@@ -238,6 +251,9 @@ pub mod hw {
     }
 
     pub fn send(device: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<Handle, String> {
+        if let Some(name) = device.strip_prefix(super::LOOPBACK) {
+            return loopback(name, sr, out, levels);
+        }
         let d = find(device).ok_or_else(|| format!("\"{device}\" não encontrado."))?;
         let (ch, fmt) = pick(&d, true, sr).ok_or_else(|| format!("\"{device}\" não tem entrada em {sr} Hz."))?;
         let cfg = StreamConfig { channels: ch, sample_rate: sr, buffer_size: cpal::BufferSize::Default };
@@ -247,6 +263,30 @@ pub mod hw {
             SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels),
             _ => input::<i16>(&d, cfg, out, levels),
         }?;
+        s.play().map_err(|e| e.to_string())?;
+        Ok(Handle::Stream(s))
+    }
+
+    /// Captura o que toca numa saída (WASAPI abre a saída como entrada em modo
+    /// loopback). O formato é o da saída; a taxa pedida é a da sessão (48 kHz).
+    fn loopback(name: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<Handle, String> {
+        let d = find_with(name, true).ok_or_else(|| format!("Saída \"{name}\" não encontrada."))?;
+        let (ch, fmt) = pick(&d, false, sr)
+            .ok_or_else(|| format!("\"{name}\" não aceita {sr} Hz. Ajuste a saída para 48 kHz nas configurações de som do Windows."))?;
+        let cfg = StreamConfig { channels: ch, sample_rate: sr, buffer_size: cpal::BufferSize::Default };
+        let s = match fmt {
+            SampleFormat::F32 => input::<f32>(&d, cfg, out, levels),
+            SampleFormat::I32 => input::<i32>(&d, cfg, out, levels),
+            SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels),
+            _ => input::<i16>(&d, cfg, out, levels),
+        }
+        .map_err(|e| {
+            if cfg!(windows) {
+                format!("Não consegui capturar o áudio de \"{name}\": {e}")
+            } else {
+                format!("Captura do áudio do sistema só funciona no Windows ({e}).")
+            }
+        })?;
         s.play().map_err(|e| e.to_string())?;
         Ok(Handle::Stream(s))
     }
@@ -323,4 +363,70 @@ pub mod hw {
         )
         .map_err(|e| e.to_string())
     }
+}
+
+/// Serve o áudio recebido ao plugin "Sona" do OBS (TCP só neste computador),
+/// no ritmo do relógio deste computador: a deriva da rede já foi compensada
+/// pela ponte, e o OBS usa o mesmo relógio para os instantes.
+fn start_obs_feed(sample_rate: u32, mut reader: Reader, levels: Arc<Levels>) -> Result<Handle, String> {
+    use sona_obs::feed;
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind(feed::ADDR)
+        .map_err(|e| format!("Porta do plugin do OBS ({}) ocupada: {e}. Outro Sona Bridge aberto?", feed::ADDR))?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = stop.clone();
+    let t = std::thread::Builder::new()
+        .name("bridge-obs".into())
+        .spawn(move || {
+            const FRAMES: usize = 480; // 10 ms
+            let header = feed::header_bytes(&feed::Header { sample_rate, channels: 2, frames: FRAMES as u16 });
+            let period = Duration::from_secs_f64(FRAMES as f64 / sample_rate as f64);
+            // Limite de atraso por cliente: 0,5 s; passou disso, desconecta (o plugin reconecta).
+            let limit = sample_rate as usize / 2 * 2 * 4;
+            let (mut l, mut r) = (vec![0.0f32; FRAMES], vec![0.0f32; FRAMES]);
+            let mut bytes = Vec::with_capacity(FRAMES * 8);
+            let mut clients: Vec<(std::net::TcpStream, Vec<u8>)> = Vec::new();
+            let mut deadline = Instant::now();
+            while !s2.load(Relaxed) {
+                while let Ok((c, _)) = listener.accept() {
+                    let _ = c.set_nonblocking(true);
+                    let _ = c.set_nodelay(true);
+                    clients.push((c, header.to_vec()));
+                }
+                {
+                    let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+                    reader.pull_planar(&mut outs, FRAMES);
+                }
+                let peak = l.iter().chain(r.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
+                Levels::put(&levels.recv_peak, peak);
+                feed::interleave(&[&l, &r], FRAMES, &mut bytes);
+                clients.retain_mut(|(c, pending)| {
+                    pending.extend_from_slice(&bytes);
+                    loop {
+                        match c.write(pending) {
+                            Ok(0) => return false,
+                            Ok(n) => {
+                                pending.drain(..n);
+                                if pending.is_empty() {
+                                    break;
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => return false,
+                        }
+                    }
+                    pending.len() < limit
+                });
+                deadline += period;
+                let now = Instant::now();
+                if deadline > now {
+                    std::thread::sleep(deadline - now);
+                } else if now - deadline > Duration::from_millis(200) {
+                    deadline = now;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(Handle::Thread(stop, Some(t)))
 }

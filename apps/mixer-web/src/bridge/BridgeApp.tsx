@@ -22,6 +22,7 @@ interface Status {
   underruns: number;
   send_peak: number;
   recv_peak: number;
+  obs_plugin: boolean | null;
 }
 interface Endpoint {
   device: string;
@@ -177,17 +178,38 @@ function Connected({ cfg, status, devices, onSaved }: { cfg: Config; status: Sta
     await post('/api/config', change);
     onSaved();
   };
-  const select = (value: string | undefined, list: Dev[], onChange: (v: string | null) => void, label: string) => (
-    <select aria-label={label} value={value ?? ''} onChange={(e) => onChange(e.target.value || null)} className="lm-field h-9 w-full px-2.5 text-[12.5px]">
-      <option value="">— nenhum —</option>
-      {value && value !== 'sim' && !list.some((d) => d.name === value) && <option value={value}>{value} (não encontrado agora)</option>}
-      {list.map((d) => (
-        <option key={`${d.host}:${d.name}`} value={d.name}>
-          {d.name} · {d.host}
-        </option>
-      ))}
-    </select>
-  );
+  const select = (value: string | undefined, list: Dev[], onChange: (v: string | null) => void, label: string, loopback: Dev[] = [], obs = false) => {
+    const known = list.some((d) => d.name === value) || loopback.some((d) => `loopback:${d.name}` === value) || (obs && value === 'obs');
+    return (
+      <select aria-label={label} value={value ?? ''} onChange={(e) => onChange(e.target.value || null)} className="lm-field h-9 w-full px-2.5 text-[12.5px]">
+        <option value="">— nenhum —</option>
+        {obs && (
+          <optgroup label="Sem cabo virtual">
+            <option value="obs">OBS neste computador (fonte “Sona”)</option>
+          </optgroup>
+        )}
+        {value && value !== 'sim' && !known && <option value={value}>{value.replace(/^loopback:/, 'Áudio do sistema — ')} (não encontrado agora)</option>}
+        {loopback.length > 0 && (
+          <optgroup label="Áudio do sistema (o que toca nos alto-falantes)">
+            {loopback.map((d) => (
+              <option key={`lb:${d.host}:${d.name}`} value={`loopback:${d.name}`}>
+                Áudio do sistema — {d.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        <optgroup label={obs ? 'Saídas' : 'Entradas'}>
+          {list.map((d) => (
+            <option key={`${d.host}:${d.name}`} value={d.name}>
+              {d.name} · {d.host}
+            </option>
+          ))}
+        </optgroup>
+      </select>
+    );
+  };
+  // Loopback é do WASAPI (Windows): oferece as saídas desse host.
+  const loopbackDevs = devices.filter((d) => d.outputs > 0 && d.host === 'WASAPI');
   const sv = status?.server_view ?? {};
   return (
     <div className="mx-auto grid w-full max-w-4xl grid-cols-1 gap-3 p-5 md:grid-cols-2">
@@ -206,17 +228,32 @@ function Connected({ cfg, status, devices, onSaved }: { cfg: Config; status: Sta
       </Card>
 
       <Card title={<span className="inline-flex items-center gap-1.5"><ArrowUp size={13} weight="bold" className="text-accent-text" /> Enviar para o servidor</span>}>
-        <p className="text-[12px] text-subtle">O que tocar neste aparelho aparece no console como o canal “{cfg.name}”. Ex.: o cabo virtual onde o Lumo ou o navegador tocam.</p>
-        {select(cfg.send?.device, devices.filter((d) => d.inputs > 0), (v) => save({ send: v ? { device: v, channels: 2 } : null }), 'Aparelho de envio')}
+        <p className="text-[12px] text-subtle">Aparece no console como o canal “{cfg.name}”. Para mandar o que toca neste computador (Lumo, navegador, vídeos), escolha <b className="text-text">Áudio do sistema</b>: não precisa de cabo virtual.</p>
+        {select(cfg.send?.device, devices.filter((d) => d.inputs > 0), (v) => save({ send: v ? { device: v, channels: 2 } : null }), 'Aparelho de envio', loopbackDevs)}
         <Level peak={status?.send_peak ?? 0} />
         {status?.send_error && <p className="text-[12px] text-warn-light">{status.send_error}</p>}
+        {cfg.send?.device?.startsWith('loopback:') && cfg.send.device === `loopback:${cfg.receive?.device}` && (
+          <p className="rounded-lg border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-[12px] text-warn-light">
+            O áudio recebido toca na mesma saída que está sendo capturada: ele volta para o servidor (laço). Receba em outro aparelho ou no OBS.
+          </p>
+        )}
       </Card>
 
       <Card title={<span className="inline-flex items-center gap-1.5"><ArrowDown size={13} weight="bold" className="text-cyan" /> Receber do servidor</span>}>
-        <p className="text-[12px] text-subtle">Toca aqui o que o servidor manda para “{cfg.name}” (ex.: a Transmissão). Para o OBS: escolha “CABLE Input” e, no OBS, capture “CABLE Output”.</p>
-        {select(cfg.receive?.device, devices.filter((d) => d.outputs > 0), (v) => save({ receive: v ? { device: v, channels: 2 } : null }), 'Aparelho de recepção')}
+        <p className="text-[12px] text-subtle">
+          O que o servidor manda para “{cfg.name}” (ex.: a Transmissão). Para o OBS, escolha <b className="text-text">OBS neste computador</b> e, no OBS, adicione a fonte de áudio <b className="text-text">“Sona (transmissão)”</b>. Não precisa de cabo virtual.
+        </p>
+        {select(cfg.receive?.device, devices.filter((d) => d.outputs > 0), (v) => save({ receive: v ? { device: v, channels: 2 } : null }), 'Aparelho de recepção', [], true)}
         <Level peak={status?.recv_peak ?? 0} />
         {status?.receive_error && <p className="text-[12px] text-warn-light">{status.receive_error}</p>}
+        {cfg.receive?.device === 'obs' && status?.obs_plugin === false && (
+          <p className="rounded-lg border border-warn/40 bg-warn/10 px-2.5 py-1.5 text-[12px] text-warn-light">
+            O plugin “Sona” não está na pasta do OBS. Reinstale o Sona Bridge (ele instala o plugin) e reabra o OBS.
+          </p>
+        )}
+        {cfg.receive?.device === 'obs' && status?.obs_plugin && (
+          <p className="text-[11.5px] text-muted">Plugin do OBS instalado. Se o OBS já estava aberto na instalação, reabra-o uma vez.</p>
+        )}
       </Card>
 
       <p className="text-[11.5px] text-muted md:col-span-2">

@@ -42,7 +42,18 @@ async fn status(State(b): S) -> Response {
     st.send_peak = 0.0;
     st.recv_peak = 0.0;
     s.server_view["type"] = serde_json::Value::Null;
-    Json(s).into_response()
+    let mut v = serde_json::to_value(&s).unwrap_or_default();
+    v["obs_plugin"] = obs_plugin_installed().into();
+    Json(v).into_response()
+}
+
+/// O plugin "Sona" está na pasta de plugins do OBS? `None` fora do Windows.
+fn obs_plugin_installed() -> Option<bool> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let base = std::env::var_os("PROGRAMDATA")?;
+    Some(std::path::Path::new(&base).join("obs-studio/plugins/sona-obs/bin/64bit/sona-obs.dll").exists())
 }
 
 async fn config_get(State(b): S) -> Response {

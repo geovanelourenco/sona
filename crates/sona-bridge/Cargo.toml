@@ -16,6 +16,7 @@ hw = ["dep:cpal"]
 [dependencies]
 sona-core = { path = "../sona-core" }
 sona-net = { path = "../sona-net" }
+sona-obs = { path = "../../apps/obs-plugin" }
 cpal = { version = "0.18", optional = true }
 rtrb = "0.3"
 tungstenite = "0.28"

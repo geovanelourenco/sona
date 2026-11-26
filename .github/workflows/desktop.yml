@@ -22,6 +22,8 @@ jobs:
       - name: Instalador do Sona
         run: npx -y @tauri-apps/cli@2.12.6 build
         working-directory: apps/desktop/sona
+      - name: Plugin do OBS (vai dentro do instalador do bridge)
+        run: cargo build --release -p sona-obs
       - name: Instalador do Sona Bridge
         run: npx -y @tauri-apps/cli@2.12.6 build
         working-directory: apps/desktop/bridge
@@ -33,6 +35,10 @@ jobs:
           New-Item -ItemType Directory -Force saida | Out-Null
           Copy-Item target/release/bundle/nsis/*.exe saida/
           Compress-Archive -Force -Path target/release/sona-server.exe, target/release/sona-bridge.exe -DestinationPath saida/sona-linha-de-comando-windows.zip
+          # Plugin avulso, na estrutura de pastas do OBS (para instalar à mão).
+          New-Item -ItemType Directory -Force plugin/sona-obs/bin/64bit, plugin/sona-obs/data | Out-Null
+          Copy-Item target/release/sona_obs.dll plugin/sona-obs/bin/64bit/sona-obs.dll
+          Compress-Archive -Force -Path plugin/sona-obs -DestinationPath saida/plugin-obs-sona-windows.zip
           Get-ChildItem saida
       - name: Publicar na Release de pré-lançamento
         uses: softprops/action-gh-release@v2
