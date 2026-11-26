@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-26T11:34:16.131Z",
+  "at": "2026-11-26T12:47:32.324Z",
   "platform": "linux",
   "results": [
     {
@@ -75,6 +75,11 @@
     {
       "id": "FR-08",
       "name": "bridge envia e recebe ao mesmo tempo, pela rede, com deriva de 120 ppm",
+      "ok": true
+    },
+    {
+      "id": "FR-12",
+      "name": "bridge acha o servidor na rede sem digitar IP (mDNS)",
       "ok": true
     },
     {

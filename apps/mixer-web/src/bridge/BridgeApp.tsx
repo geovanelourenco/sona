@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, SignOut } from '@phosphor-icons/react';
+import { ArrowDown, ArrowUp, ArrowsClockwise, Broadcast, SignOut } from '@phosphor-icons/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { meterPos } from '../lib/level';
 import { SonaMark } from '../ui/Brand';
@@ -30,6 +30,7 @@ interface Endpoint {
 }
 interface Config {
   server: string;
+  server_name: string;
   name: string;
   logged_in: boolean;
   send: Endpoint | null;
@@ -127,8 +128,37 @@ export function BridgeApp() {
   );
 }
 
+interface Found {
+  name: string;
+  address: string;
+  ips: string[];
+}
+
 function Login({ cfg, message, onDone }: { cfg: Config; message?: string; onDone: () => void }) {
   const [server, setServer] = useState(cfg.server);
+  const [serverName, setServerName] = useState(cfg.server_name ?? '');
+  const [found, setFound] = useState<Found[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const search = useCallback(async () => {
+    setSearching(true);
+    try {
+      const j = await (await fetch('/api/discover')).json();
+      const list: Found[] = j.servers ?? [];
+      setFound(list);
+      // Um só na rede e nada digitado: já escolhe.
+      if (list.length === 1) {
+        setServer((s) => s || list[0].address);
+        setServerName((n) => n || list[0].name);
+      }
+    } catch {
+      setFound([]);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+  useEffect(() => {
+    search();
+  }, [search]);
   const [name, setName] = useState(cfg.name === 'Bridge' ? '' : cfg.name);
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -141,7 +171,7 @@ function Login({ cfg, message, onDone }: { cfg: Config; message?: string; onDone
           e.preventDefault();
           setBusy(true);
           setError(null);
-          const r = await post('/api/login', { server, password, name });
+          const r = await post('/api/login', { server, password, name, server_name: serverName });
           const j = await r.json().catch(() => ({}));
           setBusy(false);
           if (!r.ok) return setError(j.error ?? 'Não consegui entrar.');
@@ -150,11 +180,48 @@ function Login({ cfg, message, onDone }: { cfg: Config; message?: string; onDone
       >
         <div>
           <h1 className="text-[20px] font-light text-hi">Conectar ao servidor Sona</h1>
-          <p className="text-[12.5px] text-subtle">Use o endereço e a senha de acesso remoto que aparecem no servidor, em Configurações.</p>
+          <p className="text-[12.5px] text-subtle">Escolha o servidor achado na rede e use a senha de acesso remoto (no servidor, em Configurações).</p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <span className="flex items-center justify-between text-[12px] font-semibold text-subtle">
+            Servidores na rede
+            <button type="button" onClick={search} disabled={searching} className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent-text hover:underline disabled:opacity-50">
+              <ArrowsClockwise size={12} weight="bold" className={cx(searching && 'animate-spin')} /> Procurar
+            </button>
+          </span>
+          {found === null || (searching && !found.length) ? (
+            <p className="rounded-lg border border-line bg-bg/60 px-3 py-2 text-[12px] text-muted">Procurando servidores Sona na rede…</p>
+          ) : found.length === 0 ? (
+            <p className="rounded-lg border border-line bg-bg/60 px-3 py-2 text-[12px] text-muted">Nenhum servidor achado. Confira se o Sona está aberto e na mesma rede, ou digite o endereço abaixo.</p>
+          ) : (
+            found.map((f) => (
+              <button
+                key={f.name}
+                type="button"
+                onClick={() => {
+                  setServer(f.address);
+                  setServerName(f.name);
+                }}
+                className={cx('flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition', server === f.address ? 'lm-selected border-transparent' : 'border-line bg-bg/60 hover:border-line-hi')}
+              >
+                <Broadcast size={16} weight="bold" className="shrink-0 text-cyan" />
+                <span className="flex-1 text-[13px] font-semibold text-hi">{f.name}</span>
+                <span className="font-mono text-[11px] text-muted">{f.address}</span>
+              </button>
+            ))
+          )}
         </div>
         <label className="flex flex-col gap-1.5">
           <span className="text-[12px] font-semibold text-subtle">Endereço do servidor</span>
-          <input autoFocus value={server} onChange={(e) => setServer(e.target.value)} placeholder="ex.: 192.168.0.10:7340" className="lm-field h-10 px-3 font-mono text-[13px]" />
+          <input
+            value={server}
+            onChange={(e) => {
+              setServer(e.target.value);
+              setServerName('');
+            }}
+            placeholder="ex.: sona.local:7340 ou 192.168.0.10:7340"
+            className="lm-field h-10 px-3 font-mono text-[13px]"
+          />
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-[12px] font-semibold text-subtle">Nome deste computador no console</span>

@@ -16,6 +16,9 @@ pub struct Endpoint {
 pub struct BridgeConfig {
     /// Endereço do servidor, ex.: "192.168.0.10:7340".
     pub server: String,
+    /// Nome do servidor achado na rede (ex.: "Sona (PC-SOM)"). Se o IP mudar,
+    /// o bridge procura de novo por este nome.
+    pub server_name: String,
     /// Nome deste bridge no console (ex.: "OBS", "Mídia").
     pub name: String,
     /// Token de sessão recebido no login (não é a senha).
@@ -30,7 +33,15 @@ pub struct BridgeConfig {
 
 impl Default for BridgeConfig {
     fn default() -> Self {
-        BridgeConfig { server: String::new(), name: "Bridge".into(), token: String::new(), send: None, receive: None, sim_ppm: 0.0 }
+        BridgeConfig {
+            server: String::new(),
+            server_name: String::new(),
+            name: "Bridge".into(),
+            token: String::new(),
+            send: None,
+            receive: None,
+            sim_ppm: 0.0,
+        }
     }
 }
 

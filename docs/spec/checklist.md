@@ -17,7 +17,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 | FR-09 Endpoints do sistema | 🟡 | Sem cabo virtual (ADR 0004): plugin "Sona" do OBS (testado com o libobs 30 real) e captura do áudio do sistema no bridge. Não aparece como microfone para outros programas. 🔧 Falta testar no Windows (instalador, OBS, loopback). |
 | FR-10 Persistência e cenas | ✅ | e2e: reinício restaura mix e cenas; entrada ausente vira aviso visível e o motor roda; estado corrompido não derruba. |
 | FR-11 Recuperação de falhas | 🟡 | Entrada ausente vira silêncio; principal que falta ou cai é trocado pelo relógio interno e reaberto a cada ~3 s; secundário que cai é reaberto sozinho; console reconecta sozinho. Falta fade na volta e validação com USB real. 🔧 |
-| FR-12 Descoberta e autenticação | 🟡 | Primeira configuração e Configurações pela interface: senha de acesso remoto (sem ela, pedidos da rede são recusados) e senha do app (opcional, neste computador). Troca encerra sessões; bloqueio após 5 erros; recuperação pela linha de comando. e2e com pedidos reais pelo IP da rede (11 verificações). Falta mDNS (endereço digitado), HTTPS fora da LAN. |
+| FR-12 Descoberta e autenticação | 🟡 | Primeira configuração e Configurações pela interface: senha de acesso remoto (sem ela, pedidos da rede são recusados) e senha do app (opcional, neste computador). Troca encerra sessões; bloqueio após 5 erros; recuperação pela linha de comando. e2e com pedidos reais pelo IP da rede (11 verificações). Descoberta por mDNS (`sona.local`, lista no bridge, reencontra quando o IP muda). Falta HTTPS fora da LAN; dois servidores na mesma rede disputariam `sona.local` (o bridge lista os dois pelo nome). |
 
 ## Segurança de operação
 

@@ -69,7 +69,7 @@ async fn main() {
     bridge.save();
     if let Some(server) = &cli.server {
         let name = cli.name.clone().unwrap_or_default();
-        if let Err(e) = bridge.login(server, cli.password.as_deref().unwrap_or(""), &name) {
+        if let Err(e) = bridge.login(server, cli.password.as_deref().unwrap_or(""), &name, "") {
             tracing::error!("{e}");
             std::process::exit(2);
         }

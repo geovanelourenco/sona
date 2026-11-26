@@ -82,10 +82,12 @@ impl Bridge {
         s.message = message.into();
     }
 
-    /// Entra no servidor com a senha e guarda o token.
-    pub fn login(&self, server: &str, password: &str, name: &str) -> Result<(), String> {
+    /// Entra no servidor com a senha e guarda o token. `server_name`: nome do
+    /// servidor achado na rede (vazio se o endereço foi digitado).
+    pub fn login(&self, server: &str, password: &str, name: &str, server_name: &str) -> Result<(), String> {
         let mut cfg = self.config.lock().unwrap().clone();
         cfg.server = server.trim().to_string();
+        cfg.server_name = server_name.trim().to_string();
         if !name.trim().is_empty() {
             cfg.name = name.trim().to_string();
         }
@@ -136,12 +138,29 @@ impl Bridge {
                 }
                 Err(SessionEnd::Failed(m)) => {
                     self.set_state("erro", m);
+                    // Servidor achado pela rede e fora do ar: talvez mudou de IP.
+                    if !cfg.server_name.is_empty() && self.rediscover(&cfg) {
+                        continue;
+                    }
                     self.wait_change(generation, backoff);
                     backoff = (backoff * 2).min(Duration::from_secs(5));
                 }
             }
         }
         self.set_state("parado", "Bridge parado.");
+    }
+
+    /// Procura o servidor pelo nome; se achou noutro endereço, troca e salva.
+    fn rediscover(&self, cfg: &BridgeConfig) -> bool {
+        let found = sona_net::discovery::discover(Duration::from_secs(2));
+        let Some(f) = found.into_iter().find(|f| f.name == cfg.server_name) else { return false };
+        if f.address == cfg.server_addr() {
+            return false;
+        }
+        tracing::info!("\"{}\" agora está em {}", cfg.server_name, f.address);
+        self.config.lock().unwrap().server = f.address;
+        self.save();
+        true
     }
 
     fn wait_change(&self, generation: u64, max: Duration) {

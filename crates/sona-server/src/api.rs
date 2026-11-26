@@ -36,6 +36,8 @@ pub struct App {
     /// Aumenta a cada reconstrução do motor (sessões de rede pegam vagas novas).
     pub generation: AtomicU64,
     pub net: std::sync::OnceLock<Arc<crate::net::Hub>>,
+    /// Anúncio mDNS (`_sona._tcp`, `sona.local`); some ao soltar.
+    pub announcement: Mutex<Option<sona_net::discovery::Announcement>>,
     pub tx: broadcast::Sender<Arc<str>>,
     pub sessions: AtomicU64,
     pub clients: AtomicU64,
@@ -70,6 +72,7 @@ impl App {
             audio_path,
             generation: AtomicU64::new(0),
             net: std::sync::OnceLock::new(),
+            announcement: Mutex::new(None),
             tx,
             sessions: AtomicU64::new(0),
             clients: AtomicU64::new(0),

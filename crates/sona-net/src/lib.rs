@@ -20,6 +20,8 @@
 //! A chave de 16 bytes é entregue pelo canal de controle autenticado
 //! (WebSocket com token de sessão). Pacote sem assinatura válida é descartado.
 
+pub mod discovery;
+
 use sha2::{Digest, Sha256};
 
 pub const MAGIC: &[u8; 4] = b"SONA";

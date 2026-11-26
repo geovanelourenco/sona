@@ -19,7 +19,8 @@ pub fn router(b: Arc<Bridge>, web: Option<std::path::PathBuf>) -> Router {
         .route("/api/config", get(config_get).post(config_set))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
-        .route("/api/devices", get(devices));
+        .route("/api/devices", get(devices))
+        .route("/api/discover", get(discover));
     let r = match web {
         Some(dir) if dir.join("bridge.html").exists() => {
             // A pasta é a mesma do console: a raiz tem de abrir bridge.html, não index.html.
@@ -58,7 +59,7 @@ fn obs_plugin_installed() -> Option<bool> {
 
 async fn config_get(State(b): S) -> Response {
     let c = b.config.lock().unwrap().clone();
-    Json(json!({ "server": c.server, "name": c.name, "logged_in": !c.token.is_empty(), "send": c.send, "receive": c.receive }))
+    Json(json!({ "server": c.server, "server_name": c.server_name, "name": c.name, "logged_in": !c.token.is_empty(), "send": c.send, "receive": c.receive }))
         .into_response()
 }
 
@@ -94,11 +95,20 @@ struct LoginReq {
     password: String,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    server_name: String,
+}
+
+/// Servidores Sona achados na rede (mDNS, ~2 s).
+async fn discover() -> Response {
+    let list = tokio::task::spawn_blocking(|| sona_net::discovery::discover(std::time::Duration::from_secs(2))).await.unwrap_or_default();
+    let v: Vec<_> = list.into_iter().map(|f| json!({"name": f.name, "address": f.address, "ips": f.ips})).collect();
+    Json(json!({ "servers": v })).into_response()
 }
 
 async fn login(State(b): S, Json(req): Json<LoginReq>) -> Response {
     let b2 = b.clone();
-    match tokio::task::spawn_blocking(move || b2.login(&req.server, &req.password, &req.name)).await {
+    match tokio::task::spawn_blocking(move || b2.login(&req.server, &req.password, &req.name, &req.server_name)).await {
         Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
         Ok(Err(e)) => (StatusCode::UNAUTHORIZED, Json(json!({"error": e}))).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Falha interna."}))).into_response(),

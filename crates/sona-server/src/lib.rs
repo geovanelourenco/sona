@@ -95,8 +95,24 @@ pub async fn start(opts: Options) -> Result<Running, String> {
     }
     let host = audio::host::AudioHost::start(&audio_cfg, engine, (pin, pout), perr, stats.clone());
 
-    let lan = if bind.ip().is_loopback() { Vec::new() } else { lan_urls(bind.port()) };
+    let mut lan = if bind.ip().is_loopback() { Vec::new() } else { lan_urls(bind.port()) };
+    // Anúncio mDNS: bridges acham o servidor sozinhos e o navegador abre sona.local.
+    let announcement = if bind.ip().is_loopback() {
+        None
+    } else {
+        match sona_net::discovery::announce(bind.port(), env!("CARGO_PKG_VERSION")) {
+            Ok(a) => {
+                lan.insert(0, format!("http://sona.local:{}", bind.port()));
+                Some(a)
+            }
+            Err(e) => {
+                tracing::warn!("Sem anúncio na rede ({e}). Use o IP para conectar.");
+                None
+            }
+        }
+    };
     let app = api::App::new(store, auth, stats, host, audio_cfg, audio_path, lan.clone());
+    *app.announcement.lock().unwrap() = announcement;
     api::spawn_meter_task(app.clone());
     api::spawn_save_task(app.clone());
     api::spawn_rebuild_watch(app.clone());
@@ -115,6 +131,7 @@ impl Running {
         let _ =
             axum::serve(self.listener, router.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown).await;
         app.store.lock().unwrap().save();
+        app.announcement.lock().unwrap().take();
         if let Some(h) = app.host.lock().unwrap().take() {
             h.shutdown();
         }

@@ -27,6 +27,12 @@
 - Recuperação: `sona-server password --app|--remote --clear` no computador do
   servidor. O arquivo é relido quando muda, então vale sem reiniciar.
 - 5 senhas erradas seguidas bloqueiam o IP por 60 s.
+- **Descoberta (mDNS/DNS-SD, como o Lumo):** o servidor anuncia `_sona._tcp`
+  com o nome `sona.local` (`crates/sona-net/src/discovery.rs`). O bridge lista
+  os servidores achados; guarda o nome do servidor e, se o IP mudar, procura
+  de novo e troca sozinho. Servidor no mesmo computador: o bridge usa
+  `127.0.0.1` (regra de acesso local). O navegador abre
+  `http://sona.local:7340`. Endereço manual continua valendo.
 - Navegador passa o token na query do WebSocket (o navegador não deixa pôr
   cabeçalho). Nada exposto à internet.
 - Cenas guardam o mix. Chamar cena não mexe em fontes, saídas, tipo e
@@ -37,6 +43,5 @@
 
 ## Pendente
 
-mDNS (descoberta na LAN) com endereço manual como alternativa: fase 3, junto com
-o bridge. HTTPS para acesso fora da LAN. App de desktop que liga o servidor e
+HTTPS para acesso fora da LAN. App de desktop que liga o servidor e
 abre o console numa janela própria (hoje: `--open` abre o navegador).

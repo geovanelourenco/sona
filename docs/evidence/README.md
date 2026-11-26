@@ -12,7 +12,7 @@ Máquina: Intel Xeon @ 2,30 GHz, 4 vCPU, Linux 6.18, sem prioridade de tempo rea
 |---|---|
 | `cargo test -p sona-core` (dsp, routing, realtime) | 29/29 |
 | `npm test` em `apps/mixer-web` | 6/6 |
-| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 20/20 — ver `acceptance-last-run.json` |
+| `node tests/e2e/acceptance.mjs` (binário release, dispositivo simulado) | 21/21 — ver `acceptance-last-run.json` |
 | `cargo test -p sona-server` (senhas e sessões) | 4/4 |
 
 ### Custo do motor (`sona-server bench --seconds 20`, release)
@@ -113,3 +113,11 @@ Máquina: Intel Xeon @ 2,10 GHz, 4 vCPU (container novo, mais disputado).
 - e2e 20/20 em 3 rodadas seguidas; o bridge pode ter 1–2 falhas de fila no
   arranque nesta máquina (pausas de agendamento), absorvidas pela fila
   adaptativa; zero falhas depois de adaptada.
+
+## Descoberta na rede (2026-11-26)
+
+- `cargo test -p sona-net`: anúncio `_sona._tcp` achado e `sona.local`
+  respondendo com endereço (mDNS no próprio container).
+- e2e: o bridge acha o servidor sem IP (`/api/discover`) e o console lista
+  `http://sona.local:7399`. Tela: `screenshots/bridge-descoberta.png`.
+- Não testado entre computadores diferentes (o container é um só host).

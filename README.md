@@ -38,13 +38,15 @@ Baixe os instaladores na página **Releases** do repositório (pré-lançamento
   liga o servidor; fechar a janela deixa o áudio rodando na bandeja. Marque
   "Iniciar com o Windows" na bandeja para o broadcast funcionar sozinho.
 - **Sona Bridge** (`Sona Bridge_…_x64-setup.exe`): no computador do OBS (e
-  nos de mídia). Não precisa de cabo virtual. Informe o endereço e a senha de
-  acesso remoto do servidor e:
+  nos de mídia). Não precisa de cabo virtual nem de IP: o bridge acha o
+  servidor na rede sozinho; escolha-o, informe a senha de acesso remoto e:
   - no computador do OBS: em "Receber", escolha **OBS neste computador** e, no
     OBS, adicione a fonte de áudio **"Sona (transmissão)"** (o instalador já
     coloca o plugin; reabra o OBS se ele estava aberto);
   - no computador de mídia: em "Enviar", escolha **Áudio do sistema** para
     mandar o que toca nos alto-falantes.
+
+Navegador em outro computador: `http://sona.local:7340` (sem IP).
 
 Os instaladores não são assinados: o SmartScreen avisa na primeira vez
 ("Mais informações" → "Executar assim mesmo"). Na primeira execução, permita

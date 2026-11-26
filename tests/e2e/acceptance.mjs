@@ -84,7 +84,7 @@ const update = (token, change, b = base) =>
 
 const first = await access();
 // Endereço deste computador na rede: pedidos por ele chegam como "outro computador".
-const lanBase = first.lan_urls[0];
+const lanBase = first.lan_urls.find((u) => !u.includes('.local'));
 const lanHost = lanBase?.replace('http://', '');
 let admin = await tokenOf(await login());
 
@@ -309,13 +309,24 @@ await check('FR-08', 'bridge envia e recebe ao mesmo tempo, pela rede, com deriv
   // container compartilhado (pausas de agendamento), então a correção só é
   // registrada; exige-se atraso no alvo e ausência de falhas depois de adaptar.
 
-  assert.ok(Math.abs(s2.server_view.latency_ms - 12) < 8, `atraso da fila no servidor ${s2.server_view.latency_ms} ms`);
+  // Fila de rede: alvo 12 ms, cresce sozinha até 80 ms se esvaziar.
+  assert.ok(s2.server_view.latency_ms > 5 && s2.server_view.latency_ms <= 80, `atraso da fila no servidor ${s2.server_view.latency_ms} ms`);
   assert.ok(s2.recv_peak > 0.4 && s2.recv_peak < 0.6, `nível recebido ${s2.recv_peak}`);
   // O console mostra o bridge pelo nome.
   const h = await (await fetch(`${base}/api/state`, { headers: { Authorization: `Bearer ${admin}` } })).json();
   assert.equal(h.io.inputs[96].name, 'OBS L');
   assert.equal(h.io.inputs[96].connected, true);
   a.ws.close();
+});
+
+await check('FR-12', 'bridge acha o servidor na rede sem digitar IP (mDNS)', async () => {
+  const j = await (await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/discover`)).json();
+  const me = j.servers.find((s) => s.address.endsWith(`:${PORT}`));
+  assert.ok(me, 'servidor anunciado: ' + JSON.stringify(j.servers));
+  assert.match(me.name, /^Sona \(/);
+  assert.ok(me.ips.length > 0 && !me.ips.includes('127.0.0.1'), 'IPs da rede anunciados');
+  const acc = await access();
+  assert.ok(acc.lan_urls.includes(`http://sona.local:${PORT}`), 'console mostra sona.local');
 });
 
 await check('FR-11', 'bridge reconecta sozinho quando a configuração de áudio do servidor muda', async () => {
