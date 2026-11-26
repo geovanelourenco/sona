@@ -45,8 +45,8 @@ pub fn read_header(r: &mut impl Read) -> std::io::Result<Header> {
 /// f32 LE intercalado → planar.
 pub fn deinterleave(raw: &[u8], planes: &mut [Vec<f32>]) {
     let ch = planes.len();
-    for (k, c) in raw.chunks_exact(4).enumerate() {
-        let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+    for (k, c) in raw.as_chunks::<4>().0.iter().enumerate() {
+        let v = f32::from_le_bytes(*c);
         if let Some(p) = planes.get_mut(k % ch).and_then(|p| p.get_mut(k / ch)) {
             *p = v;
         }
