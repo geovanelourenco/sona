@@ -20,6 +20,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Kit ASIO da Steinberg (baixado no build, não fica no repositório)
+        shell: pwsh
+        run: |
+          # O download automático do cpal falha ao descompactar no PowerShell 7;
+          # aqui baixamos e extraímos com tar e passamos o caminho ao cpal.
+          Invoke-WebRequest -Uri https://www.steinberg.net/asiosdk -OutFile asiosdk.zip
+          New-Item -ItemType Directory -Force asiosdk | Out-Null
+          tar -xf asiosdk.zip -C asiosdk
+          $dir = if (Test-Path asiosdk/common) { (Resolve-Path asiosdk).Path } else { (Get-ChildItem asiosdk -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'common') } | Select-Object -First 1).FullName }
+          if (-not $dir) { Get-ChildItem -Recurse asiosdk | Select-Object -First 30; throw 'Kit ASIO sem a pasta common' }
+          Write-Host "Kit ASIO em $dir"
+          "CPAL_ASIO_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Interface (console e tela do bridge)
         run: npm ci && npm run build
         working-directory: apps/mixer-web
