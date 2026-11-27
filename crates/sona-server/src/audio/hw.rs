@@ -78,18 +78,45 @@ pub fn list_devices() -> Vec<DeviceInfo> {
     out
 }
 
-pub fn find_device(name: &str) -> Option<cpal::Device> {
+/// Separa "ASIO:Nome" em (Some("ASIO"), "Nome"). Sem prefixo de host conhecido,
+/// procura em todos os hosts.
+pub fn split_host(spec: &str) -> (Option<&str>, &str) {
     for id in cpal::available_hosts() {
+        let h = id.name();
+        if let Some(rest) = spec.strip_prefix(h).and_then(|r| r.strip_prefix(':')) {
+            return (Some(h), rest);
+        }
+    }
+    (None, spec)
+}
+
+/// Acha o aparelho. Aceita "HOST:Nome" (ex.: "ASIO:Soundcraft…") ou só o nome.
+/// Nome exato vence nome contido (os pares WASAPI da Soundcraft contêm o nome
+/// do dispositivo ASIO); sem host, ASIO vence os outros.
+pub fn find_device(spec: &str) -> Option<cpal::Device> {
+    find_device_host(spec).map(|(d, _)| d)
+}
+
+/// Igual a `find_device`, devolvendo também o nome do host ("ASIO", "WASAPI"…).
+pub fn find_device_host(spec: &str) -> Option<(cpal::Device, &'static str)> {
+    let (want_host, name) = split_host(spec);
+    let mut hosts: Vec<cpal::HostId> = cpal::available_hosts().into_iter().filter(|id| want_host.is_none_or(|h| id.name() == h)).collect();
+    hosts.sort_by_key(|id| if id.name() == "ASIO" { 0 } else { 1 });
+    let mut contains = None;
+    for id in hosts {
         let Ok(host) = cpal::host_from_id(id) else { continue };
         let Ok(devices) = host.devices() else { continue };
         for d in devices {
             let n = d.description().map(|x| x.name().to_string()).unwrap_or_else(|_| d.to_string());
-            if n == name || n.contains(name) {
-                return Some(d);
+            if n == name {
+                return Some((d, id.name()));
+            }
+            if contains.is_none() && n.contains(name) {
+                contains = Some((d, id.name()));
             }
         }
     }
-    None
+    contains
 }
 
 /// Canais máximos de entrada e saída que o aparelho oferece na taxa dada.
@@ -152,7 +179,7 @@ pub fn start_primary(
     block: usize,
     stats: Arc<EngineStats>,
 ) -> Result<PrimaryHandle, (String, Composite)> {
-    let Some(d) = find_device(name) else { return Err((format!("\"{name}\" não encontrado."), comp)) };
+    let Some((d, host)) = find_device_host(name) else { return Err((format!("\"{name}\" não encontrado."), comp)) };
     if ch_out == 0 {
         return Err((format!("\"{name}\" não tem saída; o principal precisa de saída para ditar o relógio."), comp));
     }
@@ -160,7 +187,10 @@ pub fn start_primary(
         return Err((format!("\"{name}\": formato de saída não suportado em {sample_rate} Hz."), comp));
     };
     let fmt_in = if ch_in > 0 { format_for(&d, true, ch_in, sample_rate) } else { None };
-    let cfg = |ch| StreamConfig { channels: ch, sample_rate, buffer_size: cpal::BufferSize::Fixed(block as u32) };
+    // ASIO: o tamanho do bloco é do driver (painel da Soundcraft); pedir outro
+    // costuma falhar. Nos outros hosts, pede o bloco configurado.
+    let buffer_size = if host == "ASIO" { cpal::BufferSize::Default } else { cpal::BufferSize::Fixed(block as u32) };
+    let cfg = |ch| StreamConfig { channels: ch, sample_rate, buffer_size };
     let failed = Arc::new(AtomicBool::new(false));
     let f1 = failed.clone();
     let err = move |e: cpal::Error| {

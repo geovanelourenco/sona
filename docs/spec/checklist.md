@@ -6,7 +6,8 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⏳ não começado · 🔧 de
 
 | ID | Estado | Evidência / o que falta |
 |---|---|---|
-| FR-01 Listar dispositivos | 🟡 | `sona-server devices`, `GET /api/devices` e vista Áudio do console (principal, entradas e saídas extras, estado, deriva e atraso). Testado só com o ALSA "null". 🔧 Ui24R. |
+| FR-01 Listar dispositivos | 🟡 | Bancada 2026-11-27: o Sona listou a Soundcraft no Windows (pares WASAPI); build com ASIO para os 32 canais num dispositivo, pendente de teste. |
+| FR-01 (antes) | 🟡 | `sona-server devices`, `GET /api/devices` e vista Áudio do console (principal, entradas e saídas extras, estado, deriva e atraso). Testado só com o ALSA "null". 🔧 Ui24R. |
 | FR-02 Captura e saída multicanal | 🟡 | Mapeamento sem troca provado no motor (`routing.rs::mapeamento_multicanal_sem_troca`). Duplex cpal abre 64×64 no ALSA null. 🔧 Ui24R com sinais distintos. |
 | FR-03 Processamento em tempo real | ✅ | `dsp.rs`: ganho, mute com rampa, pan, polaridade, EQ, passa-altas, gate, compressor, limitador, estéreo. `realtime.rs`: zero alocação. |
 | FR-04 Buses independentes | ✅ | `routing.rs::buses_sao_independentes` (retorno de PA idêntico amostra a amostra), `envio_pre_fader_ignora_o_fader`. |

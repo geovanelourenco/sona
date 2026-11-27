@@ -21,9 +21,16 @@ plataformas:
    mesa, sem troca (FR-02).
 4. Duas horas sem `late_blocks` nem `input_starved` em 128 amostras.
 
-No Windows, ASIO exige compilar o cpal com a feature `asio` e o SDK da Steinberg
-(licença própria, não redistribuível no repositório). Fica para quando o teste
-de bancada mostrar que WASAPI não basta.
+**Atualização 2026-11-27 (bancada):** no Windows, o driver "Soundcraft MADI-USB
+Combo card" apresenta a Ui24R no WASAPI como vários pares estéreo ("Line Out
+03/04", "Line Out 05/06"…). Para os canais todos num dispositivo só, o app
+Sona no Windows passou a incluir **ASIO** (feature `asio` do `sona-server`,
+ligada pelo app desktop). O build baixa o kit da Steinberg (não fica no
+repositório) e usa o LLVM do runner. Dispositivos são guardados como
+"HOST:Nome" (ex.: "ASIO:Soundcraft…"), porque os pares WASAPI contêm o nome do
+dispositivo ASIO. No ASIO o tamanho do bloco é o do driver. Ao escolher a mesa
+depois da primeira configuração, o mixer ganha um canal por entrada USB (até
+32). **Não validado** com a Ui24R: depende do teste no computador da igreja.
 
 ## Limites conhecidos do host atual (`audio/hw.rs`)
 

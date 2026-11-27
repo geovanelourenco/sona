@@ -121,3 +121,11 @@ Máquina: Intel Xeon @ 2,10 GHz, 4 vCPU (container novo, mais disputado).
 - e2e: o bridge acha o servidor sem IP (`/api/discover`) e o console lista
   `http://sona.local:7399`. Tela: `screenshots/bridge-descoberta.png`.
 - Não testado entre computadores diferentes (o container é um só host).
+
+## Primeiro contato com a Soundcraft no Windows (2026-11-27)
+
+Foto do responsável do produto: a primeira configuração listou os
+dispositivos do driver "Soundcraft MADI-USB Combo card" no WASAPI, como pares
+estéreo ("Line Out 03/04 … 27/28"), além do Voicemeeter instalado na máquina.
+Consequência: escolher um par dá só 2 canais. Build com ASIO feito em seguida
+(ADR 0002); ainda não testado na máquina.

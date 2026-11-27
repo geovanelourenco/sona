@@ -9,6 +9,10 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # ASIO: o cpal gera as ligações com o bindgen (precisa do LLVM, que vem no
+      # runner) e baixa o kit da Steinberg sozinho durante o build.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,7 +32,7 @@ jobs:
         run: npx -y @tauri-apps/cli@2.12.6 build
         working-directory: apps/desktop/bridge
       - name: Ferramentas de linha de comando
-        run: cargo build --release -p sona-server -p sona-bridge
+        run: cargo build --release -p sona-server -p sona-bridge --features sona-server/asio
       - name: Juntar arquivos
         shell: pwsh
         run: |

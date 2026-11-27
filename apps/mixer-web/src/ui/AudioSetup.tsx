@@ -100,19 +100,27 @@ export function AudioSetup() {
     }
   };
 
+  // Valor guardado: "HOST:Nome" (ex.: "ASIO:Soundcraft…"); o nome sozinho
+  // casaria com os pares WASAPI da Soundcraft, que contêm o mesmo texto.
+  const key = (d: DeviceInfo) => `${d.host}:${d.name}`;
   const deviceSelect = (value: string, list: DeviceInfo[], onChange: (v: string) => void, extra: { value: string; label: string }[] = [], label = 'Aparelho') => {
-    const known = extra.some((e) => e.value === value) || list.some((d) => d.name === value);
+    const known = extra.some((e) => e.value === value) || list.some((d) => key(d) === value || d.name === value);
+    const asio = list.filter((d) => d.host === 'ASIO');
+    const rest = list.filter((d) => d.host !== 'ASIO');
+    const opt = (d: DeviceInfo) => (
+      <option key={key(d)} value={list.some((x) => x.name === value && x === d) && !value.includes(':') ? value : key(d)}>
+        {d.name} · {d.host}
+        {d.host === 'ASIO' ? ` (${maxCh(d.inputs, sr)} entradas, ${maxCh(d.outputs, sr)} saídas)` : ''}
+      </option>
+    );
     return (
       <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="lm-field h-8 min-w-0 flex-1 px-2 text-[12px]">
         {extra.map((e) => (
           <option key={e.value} value={e.value}>{e.label}</option>
         ))}
-        {!known && value && <option value={value}>{value} (não encontrado agora)</option>}
-        {list.map((d) => (
-          <option key={`${d.host}:${d.name}`} value={d.name}>
-            {d.name} · {d.host}
-          </option>
-        ))}
+        {!known && value && <option value={value}>{value.replace(/^[A-Z]+:/, '')} (não encontrado agora)</option>}
+        {asio.length > 0 && <optgroup label="ASIO (todos os canais da mesa num dispositivo)">{asio.map(opt)}</optgroup>}
+        {rest.length > 0 && <optgroup label="Windows / sistema">{rest.map(opt)}</optgroup>}
       </select>
     );
   };
@@ -124,7 +132,7 @@ export function AudioSetup() {
           title="Dispositivo principal"
           right={<StatusBadge s={primaryStatus} />}
         >
-          <p className="text-[12px] text-subtle">Dita o relógio do áudio. Na igreja: a Ui24R pelo USB. Sem mesa ligada, use o relógio interno (o Sona continua funcionando com bridges e aparelhos extras).</p>
+          <p className="text-[12px] text-subtle">Dita o relógio do áudio. Na igreja: a Ui24R pelo <b className="text-text">ASIO</b> (todos os canais USB num dispositivo só; os itens “Line Out xx/yy · WASAPI” são pares de 2 canais). Sem mesa ligada, use o relógio interno.</p>
           <div className="flex flex-wrap items-center gap-2">
             {deviceSelect(cfg.primary, outputsOf, (v) => set({ primary: v }), [
               { value: 'internal', label: 'Relógio interno (sem mesa)' },
@@ -161,7 +169,7 @@ export function AudioSetup() {
               <div key={i} className="flex flex-col gap-2 rounded-lg border border-line bg-bg/50 p-2.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={cx('rounded-full px-2 py-0.5 text-[10.5px] font-bold', s.direction === 'output' ? 'bg-cyan/15 text-cyan' : 'bg-accent/15 text-accent-text')}>{s.direction === 'output' ? 'SAÍDA' : 'ENTRADA'}</span>
-                  {deviceSelect(s.device, s.direction === 'output' ? outputsOf : inputsOf, (v) => setSec(i, { device: v, label: s.label || v.split(' (')[0] }))}
+                  {deviceSelect(s.device, s.direction === 'output' ? outputsOf : inputsOf, (v) => setSec(i, { device: v, label: s.label || v.replace(/^[A-Z]+:/, '').split(' (')[0] }))}
                   <input value={s.label} onChange={(e) => setSec(i, { label: e.target.value })} placeholder="Rótulo (ex.: OBS)" aria-label="Rótulo" className="lm-field h-8 w-36 px-2 text-[12px]" />
                   <select aria-label="Canais" value={s.channels} onChange={(e) => setSec(i, { channels: Number(e.target.value) })} className="lm-field h-8 px-2 text-[12px]">
                     <option value={1}>Mono</option>
@@ -187,10 +195,10 @@ export function AudioSetup() {
             );
           })}
           <div className="flex gap-2">
-            <Btn onClick={() => set({ secondary: [...cfg.secondary, { device: outputsOf[0]?.name ?? '', direction: 'output', channels: 2, label: '' }] })}>
+            <Btn onClick={() => set({ secondary: [...cfg.secondary, { device: outputsOf[0] ? key(outputsOf[0]) : '', direction: 'output', channels: 2, label: '' }] })}>
               <Plus size={14} weight="bold" /> Saída
             </Btn>
-            <Btn onClick={() => set({ secondary: [...cfg.secondary, { device: inputsOf[0]?.name ?? '', direction: 'input', channels: 2, label: '' }] })}>
+            <Btn onClick={() => set({ secondary: [...cfg.secondary, { device: inputsOf[0] ? key(inputsOf[0]) : '', direction: 'input', channels: 2, label: '' }] })}>
               <Plus size={14} weight="bold" /> Entrada
             </Btn>
             <span className="flex-1" />

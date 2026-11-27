@@ -31,6 +31,14 @@ pub struct DeviceStatus {
     pub overruns: u64,
 }
 
+/// "ASIO:Soundcraft…" → "Soundcraft… (ASIO)", para mostrar.
+pub fn display_name(spec: &str) -> &str {
+    match spec.split_once(':') {
+        Some((h, rest)) if !h.is_empty() && h.len() <= 12 && h.chars().all(|c| c.is_ascii_uppercase()) => rest,
+        _ => spec,
+    }
+}
+
 /// Monta a lista de canais para a configuração. Também diz quantos canais o
 /// principal usa (lidos do aparelho; se ele faltar, a faixa fica vazia).
 pub fn plan_io(cfg: &AudioConfig) -> (IoLayout, u16, u16, Option<String>) {
@@ -65,7 +73,7 @@ pub fn plan_io(cfg: &AudioConfig) -> (IoLayout, u16, u16, Option<String>) {
     let dev = match cfg.primary.as_str() {
         PRIMARY_SIM => "Mesa simulada",
         PRIMARY_INTERNAL => "Relógio interno",
-        n => n,
+        n => display_name(n),
     };
     let sim_out = ["Saída 1", "Saída 2", "Saída 3", "Saída 4", "Saída 5", "Saída 6", "Saída 7", "Saída 8", "Saída 9", "Saída 10"];
     for i in 0..pin as usize {
@@ -244,7 +252,7 @@ impl AudioHost {
         match i.cfg.primary.as_str() {
             PRIMARY_SIM => "Simulado".into(),
             PRIMARY_INTERNAL => "Relógio interno".into(),
-            n => n.into(),
+            n => display_name(n).into(),
         }
     }
 

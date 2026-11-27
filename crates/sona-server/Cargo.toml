@@ -13,6 +13,9 @@ path = "src/main.rs"
 default = ["hw"]
 # Dispositivos reais via cpal (ASIO/WASAPI/ALSA/JACK). No Linux exige libasound2-dev.
 hw = ["dep:cpal"]
+# ASIO no Windows (Ui24R com todos os canais num dispositivo só). O build baixa o
+# kit da Steinberg e precisa do LLVM (LIBCLANG_PATH). Ver .github/workflows/desktop.yml.
+asio = ["hw", "cpal/asio"]
 
 [dependencies]
 sona-core = { path = "../sona-core" }

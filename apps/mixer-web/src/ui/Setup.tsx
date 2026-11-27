@@ -25,10 +25,12 @@ export function Setup({ onDone }: { onDone: () => void }) {
       .then(([a, d]) => {
         type Dev = { name: string; host: string; outputs: { channels: number }[] };
         const list: Dev[] = (d.devices ?? []).filter((x: Dev) => x.outputs?.length);
+        // ASIO primeiro: é onde a mesa aparece com todos os canais.
+        list.sort((x, y) => (x.host === 'ASIO' ? 0 : 1) - (y.host === 'ASIO' ? 0 : 1));
         setAudioCfg(a.config);
         setDevices(list);
-        const ui = list.find((x) => /ui24|soundcraft/i.test(x.name));
-        setPrimary(ui?.name ?? a.config.primary);
+        const ui = list.find((x) => x.host === 'ASIO' && /ui24|soundcraft/i.test(x.name));
+        setPrimary(ui ? `${ui.host}:${ui.name}` : a.config.primary);
       })
       .catch(() => {});
   }, []);
@@ -79,8 +81,9 @@ export function Setup({ onDone }: { onDone: () => void }) {
             <option value="internal">Relógio interno (sem mesa)</option>
             <option value="sim">Mesa simulada (demonstração)</option>
             {devices.map((d) => (
-              <option key={`${d.host}:${d.name}`} value={d.name}>
+              <option key={`${d.host}:${d.name}`} value={`${d.host}:${d.name}`}>
                 {d.name} · {d.host}
+                {d.host === 'ASIO' ? ' — todos os canais' : ''}
               </option>
             ))}
           </select>
