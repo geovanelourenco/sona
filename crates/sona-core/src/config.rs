@@ -50,6 +50,8 @@ impl SourceMap {
 #[serde(default)]
 pub struct ChannelConfig {
     pub name: String,
+    /// Etiquetas livres ("Vocal", "Banda"…) para achar e filtrar canais.
+    pub tags: Vec<String>,
     pub source: SourceMap,
     pub trim_db: f32,
     pub polarity_invert: bool,
@@ -67,6 +69,7 @@ impl Default for ChannelConfig {
     fn default() -> Self {
         ChannelConfig {
             name: String::new(),
+            tags: Vec::new(),
             source: SourceMap::None,
             trim_db: 0.0,
             polarity_invert: false,

@@ -12,6 +12,8 @@ export interface SendConfig { bus: number; enabled: boolean; level_db: number; p
 
 export interface ChannelConfig {
   name: string;
+  /** Etiquetas livres ("Vocal", "Banda"…). */
+  tags?: string[];
   source: SourceMap;
   trim_db: number;
   polarity_invert: boolean;

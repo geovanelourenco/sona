@@ -32,6 +32,13 @@ monitor = solo ativo ? Σ PFL/AFL dos canais em solo : bus acompanhado + envios
 - Limitador de bus: sem lookahead; a saída nunca passa do teto.
 - Bus desligado (`enabled: false`) processa, mede, mas não escreve em saída.
 
+## 2b. Nome e tags do canal
+
+Cada canal tem nome (editável no painel do canal ou com duplo clique na
+faixa) e até 6 tags livres ("Vocal", "Banda"). A faixa mostra a primeira tag;
+a mesa filtra os canais por tag. Cor da tag é fixa pelo texto. Cenas guardam
+nome e tags junto com o mix.
+
 ## 3. Tipos de bus
 
 | Tipo | Uso | Regras |

@@ -6,6 +6,7 @@ import type { ChannelConfig, SendConfig, ServerState } from '../lib/types';
 import { Fader } from './Fader';
 import { MeterBar } from './Meter';
 import { cx, Toggle } from './kit';
+import { TagChip } from './Tag';
 import { useEffect, useRef } from 'react';
 import { onFrame } from '../lib/meters';
 
@@ -96,6 +97,10 @@ export function Strip({ index, ch, layer, selected, onSelect }: { index: number;
             {ch.name}
           </button>
         )}
+      </div>
+      <div className="flex h-4 w-full justify-center overflow-hidden" title={(ch.tags ?? []).join(', ')}>
+        {ch.tags?.[0] && <TagChip tag={ch.tags[0]} small />}
+        {(ch.tags?.length ?? 0) > 1 && <span className="ml-0.5 text-[9.5px] text-muted">+{ch.tags!.length - 1}</span>}
       </div>
       <span className={cx('w-full truncate text-center font-mono text-[9.5px]', src.missing ? 'text-warn-light' : 'text-muted')} title={src.text}>
         {src.missing ? '⚠ ' : ''}

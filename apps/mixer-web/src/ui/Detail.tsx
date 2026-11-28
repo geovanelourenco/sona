@@ -6,6 +6,9 @@ import type { ChannelConfig, EqBandKind } from '../lib/types';
 import { EqCurve } from './EqCurve';
 import { Card, cx, Param, Switch } from './kit';
 import { sourceLabel, withSend } from './Strip';
+import { TagChip } from './Tag';
+import { normalizeTag } from '../lib/tags';
+import { useState } from 'react';
 
 const KIND_LABEL: Record<EqBandKind, string> = { low_shelf: 'Shelf grave', peaking: 'Sino', high_shelf: 'Shelf agudo' };
 
@@ -17,6 +20,7 @@ export function Detail({ index, onClose }: { index: number; onClose: () => void 
   const ch = st.mixer.channels[index];
   if (!ch) return null;
   const dis = false;
+  const allTags = [...new Set(st.mixer.channels.flatMap((c) => c.tags ?? []))].sort((a, b) => a.localeCompare(b));
   const p = (v: Partial<ChannelConfig>) => patch(`/channels/${index}`, v);
   const sr = engine?.sample_rate || 48000;
   // Restaurar: volta o módulo ao padrão. Fader, mute, envios, nome e fonte ficam.
@@ -57,8 +61,21 @@ export function Detail({ index, onClose }: { index: number; onClose: () => void 
     <div className="flex max-h-[46vh] min-h-0 flex-col border-t border-line bg-panel/95 backdrop-blur" role="region" aria-label={`Processamento de ${ch.name}`}>
       <div className="flex items-center gap-3 px-4 pb-1 pt-3">
         <span className="font-mono text-[11px] text-muted">{index + 1}</span>
-        <h2 className="text-[14.5px] font-bold text-hi">{ch.name}</h2>
+        <input
+          key={`${index}:${ch.name}`}
+          defaultValue={ch.name}
+          aria-label="Nome do canal"
+          disabled={dis}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== ch.name) p({ name: v.slice(0, 32) });
+            else e.target.value = ch.name;
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          className="lm-field h-8 w-44 px-2 text-[14px] font-bold text-hi"
+        />
         <span className="font-mono text-[11px] text-muted">{sourceLabel(ch, st).text}</span>
+        <TagEditor tags={ch.tags ?? []} all={allTags} disabled={dis} onChange={(tags) => p({ tags })} />
         <span className="flex-1" />
         <button
           type="button"
@@ -160,6 +177,48 @@ export function Detail({ index, onClose }: { index: number; onClose: () => void 
           })}
         </Card>
       </div>
+    </div>
+  );
+}
+
+/** Tags do canal: chips com × e campo para adicionar (sugere as já usadas). */
+function TagEditor({ tags, all, onChange, disabled }: { tags: string[]; all: string[]; onChange: (t: string[]) => void; disabled?: boolean }) {
+  const [text, setText] = useState('');
+  const add = (raw: string) => {
+    const t = normalizeTag(raw);
+    if (!t || tags.some((x) => x.toLowerCase() === t.toLowerCase())) return setText('');
+    onChange([...tags, t].slice(0, 6));
+    setText('');
+  };
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      {tags.map((t) => (
+        <TagChip key={t} tag={t} onRemove={disabled ? undefined : () => onChange(tags.filter((x) => x !== t))} />
+      ))}
+      {!disabled && tags.length < 6 && (
+        <>
+          <input
+            list="sona-tags"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                add(text);
+              }
+            }}
+            onBlur={() => text && add(text)}
+            placeholder="+ tag"
+            aria-label="Adicionar tag"
+            className="lm-field h-7 w-24 px-2 text-[12px]"
+          />
+          <datalist id="sona-tags">
+            {all.filter((a) => !tags.includes(a)).map((a) => (
+              <option key={a} value={a} />
+            ))}
+          </datalist>
+        </>
+      )}
     </div>
   );
 }
