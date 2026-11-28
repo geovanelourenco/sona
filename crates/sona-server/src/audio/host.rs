@@ -76,8 +76,13 @@ pub fn plan_io(cfg: &AudioConfig) -> (IoLayout, u16, u16, Option<String>) {
         n => display_name(n),
     };
     let sim_out = ["Saída 1", "Saída 2", "Saída 3", "Saída 4", "Saída 5", "Saída 6", "Saída 7", "Saída 8", "Saída 9", "Saída 10"];
+    let ui24r = super::ui24r::matches(&cfg.primary) && pin as usize >= super::ui24r::USB_CHANNELS;
     for i in 0..pin as usize {
-        let name = if cfg.primary == PRIMARY_SIM { format!("Mesa {}", i + 1) } else { format!("USB {}", i + 1) };
+        let name = match (cfg.primary.as_str(), ui24r.then(|| super::ui24r::input_name(i)).flatten()) {
+            (PRIMARY_SIM, _) => format!("Mesa {}", i + 1),
+            (_, Some(desk)) => format!("{desk} · USB {}", i + 1),
+            _ => format!("USB {}", i + 1),
+        };
         io.set(false, PRIMARY_BASE + i, name, dev, DOMAIN_PRIMARY);
     }
     for i in 0..pout as usize {

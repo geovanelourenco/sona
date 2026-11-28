@@ -69,6 +69,19 @@ Principal (dita o relógio: Ui24R, simulado ou relógio interno), secundários
 Faixas fixas na lista de canais: principal 0–63, secundários 64–95, rede
 96–111. Configuração em `data/audio.json`; `GET|POST /api/audio`.
 
+### 5a. Perfil Ui24R
+
+Quando o principal é da Soundcraft e tem 32 entradas, as portas recebem o
+nome da mesa conforme o mapa USB do manual da Ui24R (V1.0, seção 9.0.2):
+USB 1–2 Master L/R, 3–10 AUX 1–8, 11–30 Ch 1–20, 31–32 Line In L/R. Os
+canais do Sona seguem a numeração da mesa: "Ch 1" é a USB 11 e vem primeiro;
+depois Line In, Master e AUX. Master e AUX ganham a tag "mix da mesa" (já são
+mixagens; somá-los aos canais duplica o áudio). Instalações antigas são
+reorganizadas ao abrir: só canais com o nome automático são renomeados, e os
+ajustes, o solo e as cenas seguem o canal. Player L/R e retornos de efeito
+não saem pela USB da mesa. 🔧 Mapa a confirmar na bancada (microfone na
+entrada 1 deve aparecer no "Ch 1").
+
 ## 5b. Tempo real
 
 - Bloco padrão 128 amostras a 48 kHz; aceita qualquer bloco (fatia acima de

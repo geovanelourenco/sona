@@ -166,6 +166,82 @@ pub fn adopt_primary_inputs(mixer: &mut MixerConfig, scenes: &mut BTreeMap<Strin
     true
 }
 
+/// A lista de canais atual tem a Ui24R como principal (portas com o nome da mesa).
+pub fn is_ui24r(io: &IoLayout) -> bool {
+    use crate::audio::ui24r;
+    (0..ui24r::USB_CHANNELS).all(|i| {
+        let p = &io.inputs[i];
+        p.present && ui24r::input_name(i).is_some_and(|n| p.name == format!("{n} · USB {}", i + 1))
+    })
+}
+
+/// Com a Ui24R, deixa os canais com a numeração da mesa: o canal que recebe a
+/// USB 11 se chama "Ch 1" e vem primeiro; Line In, Master e AUX vêm depois.
+/// Só renomeia canais que ainda têm o nome automático ("Ch N" pela USB N);
+/// Master e AUX ganham a tag "mix da mesa". Os ajustes de cada canal seguem
+/// com ele. Solo e cenas acompanham a nova ordem. `true` se mudou.
+pub fn apply_desk_layout(mixer: &mut MixerConfig, scenes: &mut BTreeMap<String, MixerConfig>, io: &IoLayout) -> bool {
+    use crate::audio::ui24r;
+    if !is_ui24r(io) {
+        return false;
+    }
+    let fix = |m: &mut MixerConfig| -> bool {
+        let mut changed = false;
+        let desk_input = |c: &ChannelConfig| match c.source {
+            SourceMap::Mono { input } if input < ui24r::USB_CHANNELS => Some(input),
+            SourceMap::Stereo { left, right } if left < ui24r::USB_CHANNELS && right < ui24r::USB_CHANNELS => Some(left),
+            _ => None,
+        };
+        for c in &mut m.channels {
+            let Some(i) = desk_input(c) else { continue };
+            let generic = c.name == format!("Ch {}", i + 1) || c.name == format!("USB {}", i + 1) || c.name.trim().is_empty();
+            if !generic {
+                continue;
+            }
+            c.name = match c.source {
+                SourceMap::Stereo { .. } => ui24r::input_name(i).unwrap().trim_end_matches(" L").to_string(),
+                _ => ui24r::input_name(i).unwrap(),
+            };
+            if ui24r::is_desk_mix(i) && !c.tags.iter().any(|t| t == ui24r::DESK_MIX_TAG) {
+                c.tags.push(ui24r::DESK_MIX_TAG.into());
+            }
+            changed = true;
+        }
+        // Reordena só as posições ocupadas por canais da mesa; os demais ficam onde estão.
+        let slots: Vec<usize> = (0..m.channels.len()).filter(|&k| desk_input(&m.channels[k]).is_some()).collect();
+        let mut sorted = slots.clone();
+        sorted.sort_by_key(|&k| (ui24r::order(desk_input(&m.channels[k]).unwrap()), k));
+        if sorted != slots {
+            // perm[antigo] = novo
+            let mut perm: Vec<usize> = (0..m.channels.len()).collect();
+            for (&dst, &src) in slots.iter().zip(&sorted) {
+                perm[src] = dst;
+            }
+            let mut out = m.channels.clone();
+            for (old, c) in m.channels.drain(..).enumerate() {
+                out[perm[old]] = c;
+            }
+            m.channels = out;
+            for b in &mut m.buses {
+                if let Some(mon) = &mut b.monitor {
+                    for c in &mut mon.solo {
+                        if let Some(&n) = perm.get(*c) {
+                            *c = n;
+                        }
+                    }
+                }
+            }
+            changed = true;
+        }
+        changed
+    };
+    let mut changed = fix(mixer);
+    for sc in scenes.values_mut() {
+        changed |= fix(sc);
+    }
+    changed
+}
+
 /// Migra arquivos antigos para o formato atual.
 pub fn migrate(mut v: Value) -> Result<Persisted, String> {
     let format = v.get("format").and_then(Value::as_u64).unwrap_or(0);
@@ -259,6 +335,7 @@ impl Store {
         let Persisted { mut mixer, mut scenes, .. } =
             persisted.unwrap_or_else(|| Persisted { format: STATE_FORMAT, mixer: default_mixer(&io), scenes: BTreeMap::new() });
         let adopted = adopt_primary_inputs(&mut mixer, &mut scenes, &io);
+        let adopted = apply_desk_layout(&mut mixer, &mut scenes, &io) || adopted;
         let (rt, disconnected) = runtime_config(&mixer, &io);
         let (plan, mut validation) = match compile(&rt, &layout) {
             Ok(x) => x,
@@ -285,6 +362,10 @@ impl Store {
     pub fn rebuild(&mut self, io: IoLayout, layout: Layout) -> Engine {
         if adopt_primary_inputs(&mut self.mixer, &mut self.scenes, &io) {
             tracing::info!("Canais criados para as entradas do dispositivo principal.");
+            self.dirty = true;
+        }
+        if apply_desk_layout(&mut self.mixer, &mut self.scenes, &io) {
+            tracing::info!("Canais organizados com a numeração da Ui24R.");
             self.dirty = true;
         }
         let (rt, disconnected) = runtime_config(&self.mixer, &io);
@@ -479,5 +560,75 @@ mod extra_tests {
         assert_eq!(mixer.channels[23].source, SourceMap::Mono { input: 23 });
         assert_eq!(mixer.buses[3].monitor.as_ref().unwrap().solo, vec![1, 24], "solo depois do ponto de inserção desloca");
         assert!(!adopt_primary_inputs(&mut mixer, &mut scenes, &io), "não duplica");
+    }
+}
+
+#[cfg(test)]
+mod ui24r_tests {
+    use super::*;
+    use crate::audio::{ui24r, IoLayout};
+
+    fn io_ui24r() -> IoLayout {
+        let mut io = IoLayout::default();
+        for i in 0..ui24r::USB_CHANNELS {
+            io.set(false, i, format!("{} · USB {}", ui24r::input_name(i).unwrap(), i + 1), "Soundcraft USB Audio ASIO", 1);
+            io.set(true, i, format!("USB {}", i + 1), "Soundcraft USB Audio ASIO", 1);
+        }
+        io
+    }
+
+    /// Instalação feita antes do perfil: "Ch N" ligado à USB N. Depois do
+    /// perfil, o canal 1 do Sona é o canal 1 da mesa (USB 11), com os ajustes
+    /// que já tinha; Master e AUX vão para o fim com a tag.
+    #[test]
+    fn instalacao_antiga_ganha_numeracao_da_mesa() {
+        let mut io_old = io_ui24r();
+        for i in 0..ui24r::USB_CHANNELS {
+            io_old.inputs[i].name = format!("USB {}", i + 1);
+        }
+        let mut mixer = default_mixer(&io_old);
+        assert_eq!(mixer.channels[10].name, "Ch 11");
+        mixer.channels[10].fader_db = -3.0; // era o canal 1 da mesa
+        mixer.channels[12].name = "Pastor".into(); // nome dado pelo operador
+        let rede = mixer.channels.len() - ui24r::USB_CHANNELS;
+        mixer.buses[3].monitor.as_mut().unwrap().solo = vec![10, ui24r::USB_CHANNELS];
+        let mut scenes = BTreeMap::from([("Culto".to_string(), mixer.clone())]);
+        let io = io_ui24r();
+        assert!(apply_desk_layout(&mut mixer, &mut scenes, &io));
+        let names: Vec<&str> = mixer.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(&names[..4], ["Ch 1", "Ch 2", "Pastor", "Ch 4"]);
+        assert_eq!(names[19], "Ch 20");
+        assert_eq!(&names[20..23], ["Line In L", "Line In R", "Master L"]);
+        assert_eq!(names[31], "AUX 8");
+        assert_eq!(mixer.channels[0].source, SourceMap::Mono { input: 10 });
+        assert_eq!(mixer.channels[0].fader_db, -3.0, "ajustes seguem o canal");
+        assert_eq!(mixer.channels[22].tags, vec![ui24r::DESK_MIX_TAG.to_string()]);
+        assert!(mixer.channels[0].tags.is_empty());
+        assert_eq!(mixer.channels.len(), ui24r::USB_CHANNELS + rede, "rede continua");
+        assert_eq!(mixer.buses[3].monitor.as_ref().unwrap().solo, vec![0, ui24r::USB_CHANNELS], "solo segue o canal");
+        assert_eq!(scenes["Culto"].channels[0].name, "Ch 1", "cenas também");
+        assert!(!apply_desk_layout(&mut mixer, &mut scenes, &io), "não mexe de novo");
+    }
+
+    #[test]
+    fn primeira_configuracao_com_a_ui24r() {
+        let io = io_ui24r();
+        let mut mixer = default_mixer(&io);
+        let mut scenes = BTreeMap::new();
+        adopt_primary_inputs(&mut mixer, &mut scenes, &io);
+        apply_desk_layout(&mut mixer, &mut scenes, &io);
+        assert_eq!(mixer.channels[0].name, "Ch 1");
+        assert_eq!(mixer.channels[0].source, SourceMap::Mono { input: 10 });
+        assert_eq!(mixer.channels[21].name, "Line In R");
+        assert_eq!(mixer.channels[22].name, "Master L");
+    }
+
+    #[test]
+    fn outras_mesas_nao_mudam() {
+        let (io, ..) = crate::audio::host::plan_io(&crate::audio::config::AudioConfig { primary: "sim".into(), ..Default::default() });
+        let mut mixer = default_mixer(&io);
+        let before = mixer.clone();
+        assert!(!apply_desk_layout(&mut mixer, &mut BTreeMap::new(), &io));
+        assert_eq!(serde_json::to_value(&mixer).unwrap(), serde_json::to_value(&before).unwrap());
     }
 }

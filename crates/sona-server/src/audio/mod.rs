@@ -18,6 +18,7 @@ pub mod host;
 pub mod hw;
 pub mod netslot;
 pub mod sim;
+pub mod ui24r;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
