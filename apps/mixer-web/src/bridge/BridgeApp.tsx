@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowsClockwise, Broadcast, SignOut } from '@phosphor-icons/react';
+import { ArrowDown, ArrowUp, ArrowsClockwise, Broadcast, Headphones, SignOut } from '@phosphor-icons/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { meterPos } from '../lib/level';
 import { SonaMark } from '../ui/Brand';
@@ -23,6 +23,14 @@ interface Status {
   send_peak: number;
   recv_peak: number;
   obs_plugin: boolean | null;
+  monitor_device: string | null;
+  monitor_error: string | null;
+  monitor_peak: number;
+}
+interface Monitor {
+  device: string;
+  source: 'receive' | 'send';
+  volume_db: number;
 }
 interface Endpoint {
   device: string;
@@ -35,6 +43,7 @@ interface Config {
   logged_in: boolean;
   send: Endpoint | null;
   receive: Endpoint | null;
+  monitor: Monitor | null;
 }
 interface Dev {
   name: string;
@@ -241,7 +250,7 @@ function Login({ cfg, message, onDone }: { cfg: Config; message?: string; onDone
 }
 
 function Connected({ cfg, status, devices, onSaved }: { cfg: Config; status: Status | null; devices: Dev[]; onSaved: () => void }) {
-  const save = async (change: Partial<Pick<Config, 'send' | 'receive' | 'name'>>) => {
+  const save = async (change: Partial<Pick<Config, 'send' | 'receive' | 'name' | 'monitor'>>) => {
     await post('/api/config', change);
     onSaved();
   };
@@ -323,9 +332,91 @@ function Connected({ cfg, status, devices, onSaved }: { cfg: Config; status: Sta
         )}
       </Card>
 
+      <MonitorCard cfg={cfg} status={status} outputs={devices.filter((d) => d.outputs > 0)} save={save} />
+
       <p className="text-[11.5px] text-muted md:col-span-2">
         No servidor, o que vai para este computador é escolhido em Roteamento: ligue a Transmissão à saída “{cfg.name}”. O bridge reconecta sozinho se a rede cair.
       </p>
     </div>
+  );
+}
+
+const fmtVol = (db: number) => (db <= -60 ? '−∞' : `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(0)} dB`);
+
+/** Escuta local: toca uma cópia do que chega (ou do que sai) num fone deste computador. */
+function MonitorCard({ cfg, status, outputs, save }: { cfg: Config; status: Status | null; outputs: Dev[]; save: (c: Partial<Config>) => Promise<void> }) {
+  const mon = cfg.monitor;
+  const on = !!mon?.device;
+  const [vol, setVol] = useState(mon?.volume_db ?? -12);
+  const [dev, setDev] = useState(mon?.device || '');
+  useEffect(() => {
+    if (mon) setVol(mon.volume_db);
+    if (mon?.device) setDev(mon.device);
+  }, [mon]);
+  const source = mon?.source ?? 'receive';
+  const pick = (device: string) => {
+    setDev(device);
+    if (on && device) save({ monitor: { device, source, volume_db: vol } });
+  };
+  const toggle = () => {
+    if (on) return save({ monitor: null });
+    const d = dev || outputs[0]?.name || '';
+    if (!d) return;
+    setDev(d);
+    save({ monitor: { device: d, source, volume_db: vol } });
+  };
+  const seg = (sel: boolean) => cx('h-9 flex-1 rounded-lg px-2 text-[12.5px] font-bold transition', sel ? 'bg-accent text-white' : 'text-subtle hover:text-text');
+  return (
+    <Card
+      className={cx('md:col-span-2', on && 'border-accent/70')}
+      title={<span className="inline-flex items-center gap-1.5"><Headphones size={14} weight="bold" className="text-cyan" /> Ouvir o que chega</span>}
+      right={
+        <button type="button" role="switch" aria-checked={on} aria-label="Ouvir o que chega" onClick={toggle} disabled={!on && !outputs.length} className={cx('relative h-6 w-11 rounded-full border transition disabled:opacity-40', on ? 'border-accent bg-accent' : 'border-line-hi bg-bg')}>
+          <span className={cx('absolute top-0.5 h-[18px] w-[18px] rounded-full bg-white transition-all', on ? 'left-[22px]' : 'left-0.5')} />
+        </button>
+      }
+    >
+      <p className="text-[12px] text-subtle">Para conferir num fone deste computador. Não muda nada no que vai para o OBS nem no que volta para o servidor.</p>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11.5px] font-bold text-muted">O que ouvir</span>
+          <div role="group" aria-label="O que ouvir" className="flex rounded-[10px] border border-line bg-deep p-0.5">
+            <button type="button" aria-pressed={source === 'receive'} className={seg(source === 'receive')} onClick={() => on && save({ monitor: { device: dev, source: 'receive', volume_db: vol } })} disabled={!on}>O que chega do servidor</button>
+            <button type="button" aria-pressed={source === 'send'} className={seg(source === 'send')} onClick={() => on && save({ monitor: { device: dev, source: 'send', volume_db: vol } })} disabled={!on}>O que este PC envia</button>
+          </div>
+        </div>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[11.5px] font-bold text-muted">Tocar em</span>
+          <select aria-label="Saída da escuta" value={dev} onChange={(e) => pick(e.target.value)} className="lm-field h-9 w-full px-2.5 text-[12.5px]">
+            {!dev && <option value="">— escolha um fone —</option>}
+            {dev && !outputs.some((d) => d.name === dev) && <option value={dev}>{dev} (não encontrado agora)</option>}
+            {outputs.map((d) => (
+              <option key={`${d.host}:${d.name}`} value={d.name}>{d.name} · {d.host}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="w-16 text-[11.5px] font-bold text-muted">Volume</span>
+        <input
+          type="range"
+          aria-label="Volume da escuta"
+          min={-60}
+          max={0}
+          step={1}
+          value={vol}
+          onChange={(e) => setVol(Number(e.target.value))}
+          onPointerUp={() => on && save({ monitor: { device: dev, source, volume_db: vol } })}
+          onKeyUp={() => on && save({ monitor: { device: dev, source, volume_db: vol } })}
+          className="h-1.5 flex-1 cursor-pointer accent-accent"
+        />
+        <span className="w-14 text-right font-mono text-[11.5px] text-subtle">{fmtVol(vol)}</span>
+      </div>
+      {on && <Level peak={status?.monitor_peak ?? 0} />}
+      {status?.monitor_error && <p className="text-[12px] text-warn-light">{status.monitor_error}</p>}
+      {on && source === 'receive' && cfg.receive?.device && cfg.receive.device === dev && (
+        <p className="text-[12px] text-warn-light">A escuta está na mesma saída da recepção: o som vai tocar duas vezes. Escolha outro fone.</p>
+      )}
+    </Card>
   );
 }

@@ -2,6 +2,24 @@
 
 Resultados reais, com data e máquina. Nada aqui é estimativa.
 
+## 2026-11-28 — player multitrack (container de desenvolvimento)
+
+Máquina: Intel Xeon @ 2,30 GHz, 4 vCPU, Linux 6.18, sem prioridade de tempo
+real, dispositivo simulado, bloco 256 a 48 kHz, binário release.
+
+Música de teste: 7 faixas WAV 16 bits a 44,1 kHz (3 mono, 4 estéreo), 20 s,
+enviadas por `PUT /api/player/songs/{id}/files/…`; conversão para 48 kHz.
+
+| Medida | Resultado | Como |
+|---|---|---|
+| Posição do player contra o relógio | 2,01 s / 4,04 s / 6,06 s em leituras a cada 2 s, 0 falhas do disco | `GET /api/player` |
+| Carga do motor parado (player em pausa) | média 2,2 % | mensagem `engine` do WebSocket |
+| Carga do motor tocando as 7 faixas | média 2,7 %, pico 3,6 %, 0 blocos atrasados | idem |
+| Busca para 15 s | 1 bloco sem dados (antes do sinal `ready`; hoje não conta como falha) | `POST /api/player {"action":"seek"}` |
+| Build de depuração (não usado no instalador) | não acompanha o tempo real com 7 faixas | idem |
+
+Não medido: Windows, Ui24R, disco lento (HD), mais de 7 faixas.
+
 ## 2026-11-24 — container de desenvolvimento (sem hardware de áudio)
 
 Máquina: Intel Xeon @ 2,30 GHz, 4 vCPU, Linux 6.18, sem prioridade de tempo real.

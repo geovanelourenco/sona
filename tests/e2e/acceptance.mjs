@@ -238,6 +238,69 @@ await check('seg.', 'ciclo entre buses é recusado e o estado não muda', async 
 });
 
 
+/** WAV PCM 16 bits mono com um seno. */
+function wav(rate, seconds, freq) {
+  const n = Math.round(rate * seconds);
+  const b = Buffer.alloc(44 + n * 2);
+  b.write('RIFF', 0);
+  b.writeUInt32LE(36 + n * 2, 4);
+  b.write('WAVEfmt ', 8);
+  b.writeUInt32LE(16, 16);
+  b.writeUInt16LE(1, 20);
+  b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24);
+  b.writeUInt32LE(rate * 2, 28);
+  b.writeUInt16LE(2, 32);
+  b.writeUInt16LE(16, 34);
+  b.write('data', 36);
+  b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(0.5 * Math.sin((2 * Math.PI * freq * i) / rate) * 32767), 44 + i * 2);
+  return b;
+}
+
+await check('FR-13', 'player multitrack: envia faixas, toca na mesa; click só no fone', async () => {
+  const H = { Authorization: `Bearer ${admin}` };
+  const j = (method, url, body) => fetch(`${base}${url}`, { method, headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+  const { id } = await j('POST', '/api/player/songs', { name: 'Teste e2e' });
+  for (const [name, freq] of [['Baixo.wav', 110], ['Click.wav', 1000]]) {
+    const r = await fetch(`${base}/api/player/songs/${id}/files/${name}`, { method: 'PUT', headers: H, body: wav(44100, 3, freq) });
+    assert.equal(r.status, 200, await r.text());
+  }
+  const bad = await fetch(`${base}/api/player/songs/${id}/files/notas.txt`, { method: 'PUT', headers: H, body: 'x' });
+  assert.equal(bad.status, 400, 'só arquivos de áudio');
+  const a = await client(admin);
+  const chans = a.state.mixer.channels;
+  const p = chans.findIndex((c) => c.name === 'Player');
+  const cue = chans.findIndex((c) => c.name === 'Click + guia');
+  assert.ok(p >= 0 && cue >= 0, 'canais do player na mesa: ' + chans.map((c) => c.name).join(', '));
+  const tx = a.state.mixer.buses.findIndex((b) => b.kind === 'broadcast');
+  assert.equal(chans[cue].sends.find((s) => s.bus === tx)?.enabled, false, 'click nunca na transmissão');
+  a.send({ type: 'patch', path: `/channels/${p}`, value: { fader_db: 0 } });
+  const st = await j('POST', '/api/player', { action: 'play' });
+  assert.equal(st.current, id);
+  assert.equal(st.playing, true);
+  let mp = 0, mc = 0;
+  for (let i = 0; i < 20 && (mp < 0.1 || mc < 0.1); i++) {
+    const m = await a.until((m) => m.type === 'meters');
+    mp = Math.max(mp, m.ch[p]);
+    mc = Math.max(mc, m.ch[cue]);
+  }
+  assert.ok(mp > 0.1, `nível do canal Player ${mp}`);
+  assert.ok(mc > 0.1, `nível do canal Click + guia ${mc}`);
+  // Música de 3 s termina sozinha e o player para (parar no fim é o padrão).
+  await sleep(3200);
+  const end = await (await fetch(`${base}/api/player`, { headers: H })).json();
+  assert.equal(end.playing, false, 'parou no fim');
+  assert.equal(end.underruns, 0, 'disco acompanhou o motor');
+  // Faixa por canal: aparece um canal por faixa (o click continua no fone).
+  await j('POST', '/api/player', { action: 'settings', mode: 'split' });
+  const s2 = await (await fetch(`${base}/api/state`, { headers: H })).json();
+  const names = s2.mixer.channels.filter((c) => c.tags?.includes('multitrack')).map((c) => c.name);
+  assert.deepEqual(names, ['Click + guia', 'MT Baixo']);
+  await j('POST', '/api/player', { action: 'settings', mode: 'simple' });
+  a.ws.close();
+});
+
 await check('FR-12', 'desligar o acesso remoto derruba todos os remotos', async () => {
   const c = await client(remoteToken, lanHost);
   const revoked = c.until((m) => m.type === 'revoked', 4000);
@@ -318,6 +381,33 @@ await check('FR-08', 'bridge envia e recebe ao mesmo tempo, pela rede, com deriv
   assert.equal(h.io.inputs[96].name, 'OBS L');
   assert.equal(h.io.inputs[96].connected, true);
   a.ws.close();
+});
+
+await check('FR-08', 'bridge: ouvir o que chega numa saída deste computador, sem reconectar ao mudar o volume', async () => {
+  const set = (body) => fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await set({ monitor: { device: 'sim', source: 'receive', volume_db: 0 } });
+  let st = await waitFor((s) => s.state === 'conectado' && s.monitor_device === 'sim', 15000);
+  assert.equal(st.monitor_error, null);
+  let peak = 0;
+  for (let i = 0; i < 12; i++) {
+    await sleep(250);
+    peak = Math.max(peak, (await bridgeStatus()).monitor_peak);
+  }
+  assert.ok(peak > 0.4 && peak < 0.6, `nível da escuta ${peak}`);
+  // Só o volume: aplica na hora, mesma conexão.
+  const before = (await bridgeStatus()).packets_in;
+  await set({ monitor: { device: 'sim', source: 'receive', volume_db: -60 } });
+  await sleep(1500);
+  const s2 = await bridgeStatus();
+  assert.ok(s2.packets_in > before, 'não reconectou');
+  peak = 0;
+  for (let i = 0; i < 6; i++) {
+    await sleep(250);
+    peak = Math.max(peak, (await bridgeStatus()).monitor_peak);
+  }
+  assert.ok(peak < 0.001, `volume mínimo silencia a escuta (${peak})`);
+  await set({ monitor: null });
+  await waitFor((s) => s.state === 'conectado' && s.monitor_device === null, 15000);
 });
 
 await check('FR-12', 'bridge acha o servidor na rede sem digitar IP (mDNS)', async () => {

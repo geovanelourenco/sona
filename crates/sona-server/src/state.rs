@@ -418,6 +418,74 @@ impl Store {
         Ok(())
     }
 
+    /// Deixa na mesa os canais que o player precisa (`spec`: nome, porta L,
+    /// estéreo). Canal que já existe com a mesma fonte fica com os ajustes;
+    /// os de faixa ("MT …") ganham o nome da faixa atual. Canais do player que
+    /// sobram são tirados. `true` se mudou.
+    pub fn sync_player(&mut self, spec: &[(String, usize, bool)]) -> Result<bool, PatchError> {
+        use crate::audio::{PLAYER_BASE, PLAYER_TRACK_BASE};
+        let source = |l: usize, st: bool| if st { SourceMap::Stereo { left: l, right: l + 1 } } else { SourceMap::Mono { input: l } };
+        let is_player = |c: &ChannelConfig| c.source.inputs().any(|i| (PLAYER_BASE..crate::audio::PORTS).contains(&i));
+        let mut next = self.mixer.clone();
+        let old = next.channels.clone();
+        let wanted: Vec<SourceMap> = spec.iter().map(|(_, l, st)| source(*l, *st)).collect();
+        // Mantém (na posição) canais do player que continuam; remove os demais.
+        let mut perm: Vec<Option<usize>> = Vec::with_capacity(old.len());
+        let mut kept = Vec::with_capacity(old.len());
+        for c in old.into_iter() {
+            if is_player(&c) && !wanted.contains(&c.source) {
+                perm.push(None);
+            } else {
+                perm.push(Some(kept.len()));
+                kept.push(c);
+            }
+        }
+        let mut changed = perm.iter().any(Option::is_none);
+        for ((name, l, _), src) in spec.iter().zip(&wanted) {
+            match kept.iter_mut().find(|c| c.source == *src) {
+                Some(c) => {
+                    if *l >= PLAYER_TRACK_BASE && c.name.starts_with("MT ") && c.name != *name {
+                        c.name = name.clone();
+                        changed = true;
+                    }
+                }
+                None => {
+                    let cue = name == "Click + guia";
+                    let sends = next
+                        .buses
+                        .iter()
+                        .enumerate()
+                        .map(|(b, bus)| {
+                            let monitor = bus.kind == BusKind::Monitor;
+                            let on = if cue { monitor } else { matches!(bus.kind, BusKind::Broadcast | BusKind::Recording) };
+                            SendConfig { bus: b, enabled: on, level_db: if on { 0.0 } else { OFF_DB }, ..Default::default() }
+                        })
+                        .collect();
+                    kept.push(ChannelConfig {
+                        name: name.clone(),
+                        source: *src,
+                        fader_db: if cue { 0.0 } else { -6.0 },
+                        sends,
+                        tags: vec!["multitrack".into()],
+                        ..Default::default()
+                    });
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return Ok(false);
+        }
+        next.channels = kept;
+        for b in &mut next.buses {
+            if let Some(m) = &mut b.monitor {
+                m.solo = m.solo.iter().filter_map(|&c| perm.get(c).copied().flatten()).collect();
+            }
+        }
+        self.commit(next)?;
+        Ok(true)
+    }
+
     /// Aplica um JSON Merge Patch (RFC 7386) no caminho dado.
     pub fn patch(&mut self, path: &str, value: Value) -> Result<(), PatchError> {
         let mut doc = serde_json::to_value(&self.mixer).expect("serializa");
@@ -630,5 +698,45 @@ mod ui24r_tests {
         let before = mixer.clone();
         assert!(!apply_desk_layout(&mut mixer, &mut BTreeMap::new(), &io));
         assert_eq!(serde_json::to_value(&mixer).unwrap(), serde_json::to_value(&before).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod player_tests {
+    use super::*;
+    use crate::audio::{config::AudioConfig, host::plan_io, PLAYER_CUE, PLAYER_SUM, PLAYER_TRACK_BASE};
+
+    #[test]
+    fn canais_do_player_seguem_o_modo() {
+        let dir = std::env::temp_dir().join(format!("sona-sync-{}", std::process::id()));
+        let (io, ..) = plan_io(&AudioConfig { primary: "sim".into(), ..Default::default() });
+        let layout = io.to_layout(48_000, 256);
+        let (mut store, _engine) = Store::load(dir.join("state.json"), io, layout);
+        let base = store.mixer.channels.len();
+        let simple = vec![("Player".to_string(), PLAYER_SUM, true), ("Click + guia".to_string(), PLAYER_CUE, true)];
+        assert!(store.sync_player(&simple).unwrap());
+        assert_eq!(store.mixer.channels.len(), base + 2);
+        let cue = &store.mixer.channels[base + 1];
+        assert!(!cue.sends[0].enabled, "click nunca na transmissão");
+        assert!(cue.sends.iter().any(|s| s.enabled && store.mixer.buses[s.bus].kind == BusKind::Monitor));
+        assert!(!store.sync_player(&simple).unwrap(), "idempotente");
+        // Faixa por canal: some o "Player", aparecem as faixas; o fone fica com os ajustes.
+        store.mixer.channels[base + 1].fader_db = -3.0;
+        let split = vec![
+            ("Click + guia".to_string(), PLAYER_CUE, true),
+            ("MT Baixo".to_string(), PLAYER_TRACK_BASE, false),
+            ("MT Teclas".to_string(), PLAYER_TRACK_BASE + 2, true),
+        ];
+        assert!(store.sync_player(&split).unwrap());
+        let names: Vec<&str> = store.mixer.channels[base..].iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Click + guia", "MT Baixo", "MT Teclas"]);
+        assert_eq!(store.mixer.channels[base].fader_db, -3.0);
+        assert_eq!(store.mixer.channels[base + 2].source, SourceMap::Stereo { left: PLAYER_TRACK_BASE + 2, right: PLAYER_TRACK_BASE + 3 });
+        // Outra música: faixa 1 vira "Guitarra" (mesmo canal, nome novo).
+        let split2 = vec![("Click + guia".to_string(), PLAYER_CUE, true), ("MT Guitarra".to_string(), PLAYER_TRACK_BASE, false)];
+        assert!(store.sync_player(&split2).unwrap());
+        assert_eq!(store.mixer.channels.len(), base + 2);
+        assert_eq!(store.mixer.channels[base + 1].name, "MT Guitarra");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

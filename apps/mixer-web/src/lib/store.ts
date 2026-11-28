@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { setMeters } from './meters';
+import type { PlayerState, PlayerTick } from './player';
 import type { EngineStatus, MixerConfig, ServerState } from './types';
 
 type Conn = 'idle' | 'connecting' | 'open' | 'closed' | 'unauthorized';
@@ -16,6 +17,8 @@ interface Store {
   session: number;
   state: ServerState | null;
   engine: EngineStatus | null;
+  player: PlayerState | null;
+  playerTick: PlayerTick | null;
   toasts: Toast[];
   /** Motivo de ter voltado à tela de entrada (ex.: senha trocada). */
   loginNotice: string | null;
@@ -26,6 +29,7 @@ interface Store {
   patch: (path: string, value: unknown) => void;
   send: (msg: object) => void;
   setMyMonitor: (b: number | null) => void;
+  setPlayer: (p: PlayerState) => void;
   toast: (kind: Toast['kind'], text: string) => void;
 }
 
@@ -89,6 +93,8 @@ export const useMixer = create<Store>((set, get) => ({
   session: 0,
   state: null,
   engine: null,
+  player: null,
+  playerTick: null,
   toasts: [],
   loginNotice: null,
   myMonitor: (() => {
@@ -113,7 +119,13 @@ export const useMixer = create<Store>((set, get) => ({
       const m = JSON.parse(e.data);
       switch (m.type) {
         case 'hello':
-          set({ conn: 'open', name: m.name, session: m.session, state: m.state, engine: m.engine });
+          set({ conn: 'open', name: m.name, session: m.session, state: m.state, engine: m.engine, player: m.player ?? null });
+          break;
+        case 'player':
+          set({ player: m.player });
+          break;
+        case 'player.tick':
+          set({ playerTick: { position: m.position, playing: m.playing, peaks: m.peaks } });
           break;
         case 'state':
           // Eco do próprio patch com fila ainda pendente: espera a fila esvaziar.
@@ -184,6 +196,10 @@ export const useMixer = create<Store>((set, get) => ({
         for (const [p, v] of pending) get().send({ type: 'patch', path: p, value: v });
         pending.clear();
       }, 40);
+  },
+
+  setPlayer(p) {
+    set({ player: p });
   },
 
   setMyMonitor(b) {

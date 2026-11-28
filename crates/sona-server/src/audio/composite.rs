@@ -3,6 +3,7 @@
 //! do callback do principal: sem alocação, sem trava.
 
 use super::netslot::NetRt;
+use super::player_rt::PlayerRt;
 use super::{NET_BASE, PORTS};
 use sona_core::drift::{Reader, Writer};
 use sona_core::Engine;
@@ -26,6 +27,8 @@ pub struct Composite {
     pub sec_in: Vec<SecIn>,
     pub sec_out: Vec<SecOut>,
     pub net: Vec<NetRt>,
+    /// Player multitrack (portas 112+), se ligado.
+    pub player: Option<PlayerRt>,
     max_block: usize,
 }
 
@@ -38,6 +41,7 @@ impl Composite {
             sec_in,
             sec_out,
             net,
+            player: None,
             max_block,
         }
     }
@@ -81,6 +85,9 @@ impl Composite {
                 Some(t) => rt.incoming.pull_planar_at(&mut refs, n, t),
                 None => rt.incoming.pull_planar(&mut refs, n),
             }
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.render(&mut self.ins, n);
         }
         {
             let in_refs: [&[f32]; PORTS] = std::array::from_fn(|i| &self.ins[i][..n]);

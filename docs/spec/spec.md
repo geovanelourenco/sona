@@ -12,6 +12,7 @@ controlada, inspirada no ASD-STE100 (sem alegação de conformidade formal).
 | Console web | `apps/mixer-web` | implementado |
 | Sona Bridge | `crates/sona-bridge` (+ `apps/mixer-web/bridge.html`) | implementado; LAN real pendente |
 | Transporte de rede | `crates/sona-net` | implementado (ADR 0003) |
+| Player multitrack | `crates/sona-server/src/player` (+ aba Player) | implementado (ADR 0009) |
 
 ## 2. Caminho do sinal
 
@@ -67,7 +68,7 @@ silêncio no lugar).
 Principal (dita o relógio: Ui24R, simulado ou relógio interno), secundários
 (entradas e saídas extras, via ponte de deriva) e 8 vagas de rede para bridges.
 Faixas fixas na lista de canais: principal 0–63, secundários 64–95, rede
-96–111. Configuração em `data/audio.json`; `GET|POST /api/audio`.
+96–111, player 112–163. Configuração em `data/audio.json`; `GET|POST /api/audio`.
 
 ### 5a. Perfil Ui24R
 
@@ -86,9 +87,28 @@ entrada 1 deve aparecer no "Ch 1").
 
 - Bloco padrão 128 amostras a 48 kHz; aceita qualquer bloco (fatia acima de
   `max_block`).
-- Capacidade fixa por motor: 64 canais, 16 buses (memória toda alocada na criação).
+- Capacidade fixa por motor: 96 canais, 16 buses (memória toda alocada na criação).
 - Medidores: atômicos com pico desde a última leitura; leitura a 20 Hz.
 - Estatísticas: carga do bloco, pior carga, blocos atrasados, entrada sem dados.
+
+## 5c. Player multitrack (ADR 0009)
+
+- Até 24 faixas por música (WAV, AIFF, FLAC, MP3); taxa convertida para a do
+  motor. Arquivos em `data/multitrack/`, enviados pelo navegador.
+- Repertório em ordem; "parar no fim de cada música" (padrão) para e carrega a
+  próxima; desligado, toca a próxima.
+- Por faixa: volume (−60 a +10 dB), mute, solo, fone. Volume geral do player.
+- Saída "canal único" (canal "Player") ou "faixa por canal" (canais "MT …").
+  Faixa de fone vai só para o canal "Click + guia", que não envia para
+  transmissão, gravação nem PA.
+- Falta de dados do disco depois de pronto conta em `underruns`.
+
+## 5d. Escuta no Sona Bridge
+
+O bridge toca uma cópia do que chega do servidor (ou do que ele envia) numa
+saída escolhida deste computador, com volume próprio. Não muda o que vai para o
+OBS nem para o servidor. Mudar só o volume não reconecta. Sem destino de
+recepção, o bridge recebe só para a escuta.
 
 ## 6. Protocolo de controle (WebSocket `/api/ws?token=…`)
 
@@ -100,9 +120,11 @@ Cliente → servidor:
 | `scene.save` / `scene.recall` / `scene.delete` | `name` |
 | `ping` | — |
 
-Servidor → cliente: `hello` (sessão, nome, estado, motor), `state` (estado
-inteiro + `rev` + `by`), `meters` (`ch`, `gr`, `gate`, `bus`, `lim`), `engine`,
-`error` (`message`, `issues`), `revoked` (sessão encerrada), `pong`.
+Servidor → cliente: `hello` (sessão, nome, estado, motor, player), `state`
+(estado inteiro + `rev` + `by`), `meters` (`ch`, `gr`, `gate`, `bus`, `lim`),
+`engine`, `player` (biblioteca e transporte), `player.tick` (posição e pico por
+faixa, 10 Hz enquanto toca), `error` (`message`, `issues`), `revoked` (sessão
+encerrada), `pong`.
 
 HTTP:
 
@@ -116,14 +138,19 @@ HTTP:
 | `GET /api/devices` | sim | dispositivos de áudio do sistema |
 | `GET /api/bridge` (WebSocket) | sim | controle do Sona Bridge (ADR 0003) |
 | `GET /api/audio` / `POST /api/audio` | sim | configuração de áudio e estado de cada aparelho; aplicar reabre os aparelhos (~1 s sem som) |
+| `GET /api/player` / `POST /api/player` | sim | estado; `action`: `play`, `pause`, `stop`, `seek` (`seconds`), `load` (`id`), `next`, `prev`, `settings` (`mode`, `master_db`, `stop_at_end`), `reorder` (`ids`) |
+| `POST /api/player/songs` | sim | `name` → `id` |
+| `POST` / `DELETE /api/player/songs/{id}` | sim | nome, `bpm`, `key`, `tracks` (`file` + `name`, `gain_db`, `mute`, `solo`, `cue`) / apaga a música e os arquivos |
+| `PUT` / `DELETE /api/player/songs/{id}/files/{arquivo}` | sim | corpo cru do arquivo de áudio (sem limite de tamanho, gravado em partes) / tira a faixa |
 
 Interface estática na raiz (servida também para a rede, para mostrar a tela de
 entrada). Regras de acesso: ADR 0005.
 
 ## 7. Persistência
 
-`data/state.json` (`format: 1`, `mixer`, `scenes`) e `data/auth.json` (hashes
-das sessões, da senha do app e da senha remota; `setup_done`).
+`data/state.json` (`format: 1`, `mixer`, `scenes`), `data/auth.json` (hashes
+das sessões, da senha do app e da senha remota; `setup_done`) e
+`data/multitrack/library.json` (repertório, modo, mix por faixa).
 Gravação 0,5 s depois da última mudança e no desligamento.
 
 ## 8. Requisitos e onde são verificados

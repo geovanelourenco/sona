@@ -44,6 +44,7 @@ pub struct App {
     /// Endereços deste computador na rede (ex.: http://192.168.0.10:7340).
     pub lan_urls: Vec<String>,
     login_failures: Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    pub player: Arc<crate::player::Player>,
 }
 
 /// Tentativas erradas seguidas antes de bloquear um IP.
@@ -53,6 +54,7 @@ const LOCKOUT: Duration = Duration::from_secs(60);
 pub type Shared = Arc<App>;
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Store,
         auth: Auth,
@@ -61,6 +63,7 @@ impl App {
         audio: AudioConfig,
         audio_path: std::path::PathBuf,
         lan_urls: Vec<String>,
+        player: Arc<crate::player::Player>,
     ) -> Shared {
         let (tx, _) = broadcast::channel(256);
         Arc::new(App {
@@ -78,6 +81,7 @@ impl App {
             clients: AtomicU64::new(0),
             lan_urls,
             login_failures: Mutex::new(HashMap::new()),
+            player,
         })
     }
 
@@ -129,6 +133,23 @@ impl App {
         Value::Array(list)
     }
 
+    /// Depois de mudar o player: acerta os canais da mesa e avisa as telas.
+    pub fn player_changed(&self) {
+        let spec = self.player.channel_spec();
+        let changed = match self.store.lock().unwrap().sync_player(&spec) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Canais do player: {e}");
+                false
+            }
+        };
+        if changed {
+            self.broadcast_state(0);
+        }
+        let msg = json!({ "type": "player", "player": self.player.snapshot() }).to_string();
+        let _ = self.tx.send(msg.into());
+    }
+
     pub fn data_dir(&self) -> std::path::PathBuf {
         self.audio_path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
     }
@@ -149,7 +170,7 @@ impl App {
         let (io, pin, pout, perr) = crate::audio::host::plan_io(&cfg);
         let layout = io.to_layout(cfg.sample_rate, cfg.block);
         let engine = self.store.lock().unwrap().rebuild(io, layout);
-        let host = AudioHost::start(&cfg, engine, (pin, pout), perr, self.stats.clone());
+        let host = AudioHost::start(&cfg, engine, (pin, pout), perr, self.stats.clone(), Some(self.player.attach(cfg.sample_rate)));
         *self.host.lock().unwrap() = Some(host);
         *self.audio.lock().unwrap() = cfg;
         self.generation.fetch_add(1, Relaxed);
@@ -167,7 +188,14 @@ pub fn router(app: Shared, web_dir: Option<std::path::PathBuf>) -> Router {
         .route("/api/devices", get(devices))
         .route("/api/audio", get(audio_get).post(audio_set))
         .route("/api/ws", get(ws))
-        .route("/api/bridge", get(bridge_ws));
+        .route("/api/bridge", get(bridge_ws))
+        .route("/api/player", get(player_get).post(player_action))
+        .route("/api/player/songs", axum::routing::post(player_create))
+        .route("/api/player/songs/{id}", axum::routing::post(player_update).delete(player_delete))
+        .route(
+            "/api/player/songs/{id}/files/{file}",
+            axum::routing::put(player_upload).delete(player_remove_file).layer(axum::extract::DefaultBodyLimit::disable()),
+        );
     let api = match web_dir {
         Some(dir) if dir.join("index.html").exists() => {
             let index = dir.join("index.html");
@@ -462,6 +490,7 @@ async fn session(app: Shared, socket: WebSocket, name: String, token: String) {
         "name": name,
         "state": app.store.lock().unwrap().snapshot(),
         "engine": app.engine_status(),
+        "player": app.player.snapshot(),
     });
     if sink.send(Message::Text(hello.to_string().into())).await.is_err() {
         app.clients.fetch_sub(1, Relaxed);
@@ -623,6 +652,228 @@ pub fn spawn_save_task(app: Shared) {
             })
             .await
             .map(|rev| last_rev = rev);
+        }
+    });
+}
+
+// ── Player multitrack ──
+
+fn bad(e: String) -> Response {
+    deny(StatusCode::BAD_REQUEST, &e)
+}
+
+async fn player_get(State(app): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    match authed(&app, bearer(&headers), &peer) {
+        Ok(_) => Json(app.player.snapshot()).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// `{"action": "play" | "pause" | "stop" | "next" | "prev" | "seek" | "load" | "settings" | "reorder", …}`
+async fn player_action(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(v): Json<Value>,
+) -> Response {
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    let app2 = app.clone();
+    let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let p = &app2.player;
+        match v["action"].as_str().unwrap_or("") {
+            "play" => p.play(),
+            "pause" => p.pause(),
+            "stop" => p.stop(),
+            "seek" => p.seek_seconds(v["seconds"].as_f64().unwrap_or(0.0)),
+            "load" => p.load(v["id"].as_str().unwrap_or(""))?,
+            "next" | "prev" => {
+                let id = p.neighbor(if v["action"] == "next" { 1 } else { -1 }).ok_or("Não há outra música nessa direção.")?;
+                let was = p.sh.playing.load(Relaxed);
+                p.load(&id)?;
+                if was {
+                    p.play();
+                }
+            }
+            "settings" => p.set_settings(&v),
+            "reorder" => {
+                let ids: Vec<String> =
+                    v["ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                p.reorder(&ids);
+            }
+            other => return Err(format!("Ação desconhecida: {other}")),
+        }
+        app2.player_changed();
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|_| Err("Falha interna.".into()));
+    match res {
+        Ok(()) => Json(app.player.snapshot()).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+async fn player_create(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(v): Json<Value>,
+) -> Response {
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    match app.player.create_song(v["name"].as_str().unwrap_or("")) {
+        Ok(id) => {
+            app.player_changed();
+            Json(json!({ "id": id })).into_response()
+        }
+        Err(e) => bad(e),
+    }
+}
+
+async fn player_update(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(v): Json<Value>,
+) -> Response {
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    match app.player.update_song(&id, &v) {
+        Ok(()) => {
+            app.player_changed();
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => bad(e),
+    }
+}
+
+async fn player_delete(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    let app2 = app.clone();
+    let res = tokio::task::spawn_blocking(move || app2.player.delete_song(&id)).await.unwrap_or_else(|_| Err("Falha interna.".into()));
+    match res {
+        Ok(()) => {
+            app.player_changed();
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => bad(e),
+    }
+}
+
+/// Corpo cru do arquivo (pode ter centenas de MB): gravado em partes no disco.
+async fn player_upload(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Path((id, file)): axum::extract::Path<(String, String)>,
+    body: axum::body::Body,
+) -> Response {
+    use tokio::io::AsyncWriteExt;
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    let path = match app.player.upload_path(&id, &file) {
+        Ok(p) => p,
+        Err(e) => return bad(e),
+    };
+    let tmp = path.with_extension("parcial");
+    let mut out = match tokio::fs::File::create(&tmp).await {
+        Ok(f) => f,
+        Err(e) => return bad(format!("Não consegui gravar: {e}")),
+    };
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let ok = match chunk {
+            Ok(b) => out.write_all(&b).await.is_ok(),
+            Err(_) => false,
+        };
+        if !ok {
+            drop(out);
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return bad("Envio interrompido.".into());
+        }
+    }
+    if out.flush().await.is_err() || tokio::fs::rename(&tmp, &path).await.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return bad("Não consegui gravar o arquivo.".into());
+    }
+    drop(out);
+    let app2 = app.clone();
+    let res = tokio::task::spawn_blocking(move || app2.player.add_file(&id, &file)).await.unwrap_or_else(|_| Err("Falha interna.".into()));
+    match res {
+        Ok(t) => {
+            app.player_changed();
+            Json(json!({ "track": t })).into_response()
+        }
+        Err(e) => bad(e),
+    }
+}
+
+async fn player_remove_file(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Path((id, file)): axum::extract::Path<(String, String)>,
+) -> Response {
+    if let Err(r) = authed(&app, bearer(&headers), &peer) {
+        return r;
+    }
+    match app.player.remove_track(&id, &file) {
+        Ok(()) => {
+            app.player_changed();
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(e) => bad(e),
+    }
+}
+
+/// Posição e níveis do player a 10 Hz enquanto toca; fim da música avança o
+/// repertório (para, ou toca a próxima se "parar no fim" estiver desligado).
+pub fn spawn_player_task(app: Shared) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut was_playing = false;
+        loop {
+            tick.tick().await;
+            let p = app.player.clone();
+            if p.sh.ended.swap(false, Relaxed) {
+                let app2 = app.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let p = &app2.player;
+                    let auto = !p.lib.lock().unwrap().stop_at_end;
+                    match p.neighbor(1) {
+                        Some(next) => {
+                            let _ = p.load(&next);
+                            if auto {
+                                p.play();
+                            }
+                        }
+                        None => p.stop(),
+                    }
+                    app2.player_changed();
+                })
+                .await;
+            }
+            let playing = p.sh.playing.load(Relaxed);
+            if (playing || was_playing) && app.tx.receiver_count() > 0 {
+                let _ = app.tx.send(p.tick().to_string().into());
+            }
+            if playing != was_playing {
+                app.player_changed();
+            }
+            was_playing = playing;
         }
     });
 }

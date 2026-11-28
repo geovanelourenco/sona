@@ -10,6 +10,7 @@
 //! | 0..64 | dispositivo principal (Ui24R, simulado) |
 //! | 64..96 | dispositivos secundários, na ordem da configuração |
 //! | 96..112 | vagas de rede: vaga `i` usa 96 + 2i (L) e 97 + 2i (R) |
+//! | 112..164 | player multitrack: soma (112–113), click/guia (114–115), faixa `k` em 116 + 2k (L) e 117 + 2k (R) |
 
 pub mod composite;
 pub mod config;
@@ -17,6 +18,7 @@ pub mod host;
 #[cfg(feature = "hw")]
 pub mod hw;
 pub mod netslot;
+pub mod player_rt;
 pub mod sim;
 pub mod ui24r;
 
@@ -29,7 +31,15 @@ pub const SECONDARY_BASE: usize = 64;
 pub const SECONDARY_MAX: usize = 32;
 pub const NET_BASE: usize = 96;
 pub const NET_SLOTS: usize = 8;
-pub const PORTS: usize = NET_BASE + 2 * NET_SLOTS;
+pub const PLAYER_BASE: usize = NET_BASE + 2 * NET_SLOTS;
+/// Faixas que o player toca ao mesmo tempo.
+pub const PLAYER_TRACKS: usize = 24;
+pub const PLAYER_SUM: usize = PLAYER_BASE;
+pub const PLAYER_CUE: usize = PLAYER_BASE + 2;
+pub const PLAYER_TRACK_BASE: usize = PLAYER_BASE + 4;
+pub const PORTS: usize = PLAYER_TRACK_BASE + 2 * PLAYER_TRACKS;
+/// Canais que o motor aceita (mesa de 32 + rede + faixas do player).
+pub const MAX_CHANNELS: usize = 96;
 
 /// Um canal na lista plana de entradas ou saídas do motor.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -61,6 +71,7 @@ impl Default for IoLayout {
 impl IoLayout {
     pub fn to_layout(&self, sample_rate: u32, block: usize) -> sona_core::Layout {
         let mut l = sona_core::Layout::new(sample_rate as f32, block.max(64), PORTS, PORTS);
+        l.max_channels = MAX_CHANNELS;
         l.input_domains = self.inputs.iter().map(|p| p.domain).collect();
         l.output_domains = self.outputs.iter().map(|p| p.domain).collect();
         l
@@ -77,6 +88,8 @@ impl IoLayout {
 /// Domínios de relógio (para o aviso de laço pela mesa).
 pub const DOMAIN_PRIMARY: u32 = 1;
 pub const DOMAIN_NET: u32 = 1000;
+/// O player gera áudio no relógio do motor, mas não é aparelho (sem laço pela mesa).
+pub const DOMAIN_PLAYER: u32 = 2000;
 
 /// Estatísticas da thread de áudio, sem trava.
 #[derive(Default)]

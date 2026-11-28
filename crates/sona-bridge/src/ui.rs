@@ -1,7 +1,7 @@
 //! API local do bridge (só deste computador) para a tela do app.
 
 use crate::client::Bridge;
-use crate::config::{BridgeConfig, Endpoint};
+use crate::config::{BridgeConfig, Endpoint, Monitor};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -42,6 +42,7 @@ async fn status(State(b): S) -> Response {
     let st = &mut b.status.lock().unwrap();
     st.send_peak = 0.0;
     st.recv_peak = 0.0;
+    st.monitor_peak = 0.0;
     s.server_view["type"] = serde_json::Value::Null;
     let mut v = serde_json::to_value(&s).unwrap_or_default();
     v["obs_plugin"] = obs_plugin_installed().into();
@@ -59,18 +60,41 @@ fn obs_plugin_installed() -> Option<bool> {
 
 async fn config_get(State(b): S) -> Response {
     let c = b.config.lock().unwrap().clone();
-    Json(json!({ "server": c.server, "server_name": c.server_name, "name": c.name, "logged_in": !c.token.is_empty(), "send": c.send, "receive": c.receive }))
+    Json(json!({ "server": c.server, "server_name": c.server_name, "name": c.name, "logged_in": !c.token.is_empty(), "send": c.send, "receive": c.receive, "monitor": c.monitor }))
         .into_response()
+}
+
+/// `null` explícito vira `Some(None)` (desligar); campo ausente, `None` (não mexe).
+fn double<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
 struct ConfigReq {
     name: Option<String>,
+    #[serde(default, deserialize_with = "double")]
     send: Option<Option<Endpoint>>,
+    #[serde(default, deserialize_with = "double")]
     receive: Option<Option<Endpoint>>,
+    #[serde(default, deserialize_with = "double")]
+    monitor: Option<Option<Monitor>>,
 }
 
 async fn config_set(State(b): S, Json(req): Json<ConfigReq>) -> Response {
+    // Só o volume da escuta mudou: aplica na hora, sem reconectar.
+    if req.name.is_none() && req.send.is_none() && req.receive.is_none() {
+        if let Some(Some(m)) = &req.monitor {
+            let mut c = b.config.lock().unwrap();
+            let same = c.monitor.as_ref().is_some_and(|o| o.device == m.device && o.source == m.source);
+            if same {
+                c.monitor = Some(m.clone());
+                drop(c);
+                b.monitor_gain.store(crate::audio::db_to_gain(m.volume_db).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                b.save();
+                return Json(json!({"ok": true})).into_response();
+            }
+        }
+    }
     {
         let mut c: std::sync::MutexGuard<BridgeConfig> = b.config.lock().unwrap();
         if let Some(n) = req.name.filter(|n| !n.trim().is_empty()) {
@@ -81,6 +105,9 @@ async fn config_set(State(b): S, Json(req): Json<ConfigReq>) -> Response {
         }
         if let Some(r) = req.receive {
             c.receive = r;
+        }
+        if let Some(m) = req.monitor {
+            c.monitor = m;
         }
     }
     b.save();

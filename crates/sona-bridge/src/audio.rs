@@ -40,6 +40,65 @@ impl Levels {
     }
 }
 
+/// Cópia do áudio para a escuta ("ouvir o que chega"): quem toca ou captura
+/// empurra aqui sem bloquear; a saída de escuta lê com deriva compensada.
+/// Mudar a escuta é raro, então `try_lock` no callback nunca espera.
+pub struct Tap {
+    inner: Mutex<TapInner>,
+    /// Volume da escuta (bits de f32, linear).
+    pub gain: Arc<AtomicU32>,
+}
+
+struct TapInner {
+    writer: sona_core::drift::Writer,
+    scratch: Vec<f32>,
+}
+
+pub type TapRef = Option<Arc<Tap>>;
+
+impl Tap {
+    pub fn new(writer: sona_core::drift::Writer, gain: Arc<AtomicU32>) -> Arc<Tap> {
+        Arc::new(Tap { inner: Mutex::new(TapInner { writer, scratch: vec![0.0; 4096] }), gain })
+    }
+
+    pub fn push_planar(&self, l: &[f32], r: &[f32]) {
+        let Ok(mut t) = self.inner.try_lock() else { return };
+        let g = f32::from_bits(self.gain.load(Relaxed));
+        let TapInner { writer, scratch } = &mut *t;
+        let n = l.len().min(r.len());
+        let mut i = 0;
+        while i < n {
+            let k = (n - i).min(scratch.len() / 2);
+            for j in 0..k {
+                scratch[2 * j] = l[i + j] * g;
+                scratch[2 * j + 1] = r[i + j] * g;
+            }
+            writer.push_interleaved(&scratch[..2 * k]);
+            i += k;
+        }
+    }
+
+    pub fn push_interleaved(&self, data: &[f32]) {
+        let Ok(mut t) = self.inner.try_lock() else { return };
+        let g = f32::from_bits(self.gain.load(Relaxed));
+        let TapInner { writer, scratch } = &mut *t;
+        for c in data.chunks(scratch.len()) {
+            for (d, s) in scratch.iter_mut().zip(c) {
+                *d = s * g;
+            }
+            writer.push_interleaved(&scratch[..c.len()]);
+        }
+    }
+}
+
+pub fn db_to_gain(db: f32) -> f32 {
+    if db <= -60.0 {
+        0.0
+    } else {
+        10f32.powf(db / 20.0)
+    }
+}
+
 pub enum Handle {
     Thread(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>),
     #[cfg(feature = "hw")]
@@ -58,7 +117,14 @@ impl Drop for Handle {
 }
 
 /// Liga o aparelho de envio: escreve áudio estéreo intercalado em `out`.
-pub fn start_send(device: &str, sample_rate: u32, ppm: f64, mut out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<Handle, String> {
+pub fn start_send(
+    device: &str,
+    sample_rate: u32,
+    ppm: f64,
+    mut out: rtrb::Producer<f32>,
+    levels: Arc<Levels>,
+    tap: TapRef,
+) -> Result<Handle, String> {
     if device == SIM {
         let stop = Arc::new(AtomicBool::new(false));
         let s2 = stop.clone();
@@ -88,6 +154,9 @@ pub fn start_send(device: &str, sample_rate: u32, ppm: f64, mut out: rtrb::Produ
                         n += 1;
                     }
                     Levels::put(&levels.send_peak, 0.5);
+                    if let Some(t) = &tap {
+                        t.push_interleaved(&buf);
+                    }
                     for s in &buf {
                         let _ = out.push(*s);
                     }
@@ -105,16 +174,29 @@ pub fn start_send(device: &str, sample_rate: u32, ppm: f64, mut out: rtrb::Produ
     }
     #[cfg(feature = "hw")]
     {
-        hw::send(device, sample_rate, out, levels)
+        hw::send(device, sample_rate, out, levels, tap)
     }
     #[cfg(not(feature = "hw"))]
-    Err(format!("\"{device}\": compilado sem suporte a aparelhos reais."))
+    {
+        let _ = tap;
+        Err(format!("\"{device}\": compilado sem suporte a aparelhos reais."))
+    }
 }
 
 /// Liga o aparelho de recepção: lê estéreo de `reader` (com deriva compensada).
-pub fn start_receive(device: &str, sample_rate: u32, ppm: f64, mut reader: Reader, levels: Arc<Levels>) -> Result<Handle, String> {
+pub fn start_receive(
+    device: &str,
+    sample_rate: u32,
+    ppm: f64,
+    mut reader: Reader,
+    levels: Arc<Levels>,
+    tap: TapRef,
+) -> Result<Handle, String> {
     if device == OBS {
-        return start_obs_feed(sample_rate, reader, levels);
+        return start_obs_feed(sample_rate, reader, levels, tap);
+    }
+    if device.is_empty() {
+        return start_null_sink(sample_rate, reader, levels, tap);
     }
     if device == SIM {
         let stop = Arc::new(AtomicBool::new(false));
@@ -133,6 +215,9 @@ pub fn start_receive(device: &str, sample_rate: u32, ppm: f64, mut reader: Reade
                     {
                         let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
                         reader.pull_planar(&mut outs, block);
+                    }
+                    if let Some(t) = &tap {
+                        t.push_planar(&l, &r);
                     }
                     for (i, v) in l.iter().enumerate() {
                         Levels::put(&levels.recv_peak, *v);
@@ -172,15 +257,51 @@ pub fn start_receive(device: &str, sample_rate: u32, ppm: f64, mut reader: Reade
     }
     #[cfg(feature = "hw")]
     {
-        hw::receive(device, sample_rate, reader, levels)
+        hw::receive(device, sample_rate, reader, levels, tap)
     }
     #[cfg(not(feature = "hw"))]
-    Err(format!("\"{device}\": compilado sem suporte a aparelhos reais."))
+    {
+        let _ = tap;
+        Err(format!("\"{device}\": compilado sem suporte a aparelhos reais."))
+    }
+}
+
+/// Recebe sem tocar em lugar nenhum (só para a escuta), no ritmo deste computador.
+fn start_null_sink(sample_rate: u32, mut reader: Reader, levels: Arc<Levels>, tap: TapRef) -> Result<Handle, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = stop.clone();
+    let t = std::thread::Builder::new()
+        .name("bridge-escuta".into())
+        .spawn(move || {
+            const FRAMES: usize = 480;
+            let period = Duration::from_secs_f64(FRAMES as f64 / sample_rate as f64);
+            let (mut l, mut r) = (vec![0.0f32; FRAMES], vec![0.0f32; FRAMES]);
+            let mut deadline = Instant::now();
+            while !s2.load(Relaxed) {
+                {
+                    let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+                    reader.pull_planar(&mut outs, FRAMES);
+                }
+                Levels::put(&levels.recv_peak, l.iter().chain(r.iter()).fold(0.0f32, |m, v| m.max(v.abs())));
+                if let Some(t) = &tap {
+                    t.push_planar(&l, &r);
+                }
+                deadline += period;
+                let now = Instant::now();
+                if deadline > now {
+                    std::thread::sleep(deadline - now);
+                } else if now - deadline > Duration::from_millis(200) {
+                    deadline = now;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(Handle::Thread(stop, Some(t)))
 }
 
 #[cfg(feature = "hw")]
 pub mod hw {
-    use super::{Handle, Levels};
+    use super::{Handle, Levels, TapRef};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
     use serde::Serialize;
@@ -250,18 +371,18 @@ pub mod hw {
         Some((ch, fmt))
     }
 
-    pub fn send(device: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<Handle, String> {
+    pub fn send(device: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>, tap: TapRef) -> Result<Handle, String> {
         if let Some(name) = device.strip_prefix(super::LOOPBACK) {
-            return loopback(name, sr, out, levels);
+            return loopback(name, sr, out, levels, tap);
         }
         let d = find(device).ok_or_else(|| format!("\"{device}\" não encontrado."))?;
         let (ch, fmt) = pick(&d, true, sr).ok_or_else(|| format!("\"{device}\" não tem entrada em {sr} Hz."))?;
         let cfg = StreamConfig { channels: ch, sample_rate: sr, buffer_size: cpal::BufferSize::Default };
         let s = match fmt {
-            SampleFormat::F32 => input::<f32>(&d, cfg, out, levels),
-            SampleFormat::I32 => input::<i32>(&d, cfg, out, levels),
-            SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels),
-            _ => input::<i16>(&d, cfg, out, levels),
+            SampleFormat::F32 => input::<f32>(&d, cfg, out, levels, tap),
+            SampleFormat::I32 => input::<i32>(&d, cfg, out, levels, tap),
+            SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels, tap),
+            _ => input::<i16>(&d, cfg, out, levels, tap),
         }?;
         s.play().map_err(|e| e.to_string())?;
         Ok(Handle::Stream(s))
@@ -269,16 +390,16 @@ pub mod hw {
 
     /// Captura o que toca numa saída (WASAPI abre a saída como entrada em modo
     /// loopback). O formato é o da saída; a taxa pedida é a da sessão (48 kHz).
-    fn loopback(name: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<Handle, String> {
+    fn loopback(name: &str, sr: u32, out: rtrb::Producer<f32>, levels: Arc<Levels>, tap: TapRef) -> Result<Handle, String> {
         let d = find_with(name, true).ok_or_else(|| format!("Saída \"{name}\" não encontrada."))?;
         let (ch, fmt) = pick(&d, false, sr)
             .ok_or_else(|| format!("\"{name}\" não aceita {sr} Hz. Ajuste a saída para 48 kHz nas configurações de som do Windows."))?;
         let cfg = StreamConfig { channels: ch, sample_rate: sr, buffer_size: cpal::BufferSize::Default };
         let s = match fmt {
-            SampleFormat::F32 => input::<f32>(&d, cfg, out, levels),
-            SampleFormat::I32 => input::<i32>(&d, cfg, out, levels),
-            SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels),
-            _ => input::<i16>(&d, cfg, out, levels),
+            SampleFormat::F32 => input::<f32>(&d, cfg, out, levels, tap),
+            SampleFormat::I32 => input::<i32>(&d, cfg, out, levels, tap),
+            SampleFormat::I24 => input::<cpal::I24>(&d, cfg, out, levels, tap),
+            _ => input::<i16>(&d, cfg, out, levels, tap),
         }
         .map_err(|e| {
             if cfg!(windows) {
@@ -291,22 +412,42 @@ pub mod hw {
         Ok(Handle::Stream(s))
     }
 
-    fn input<T>(d: &cpal::Device, cfg: StreamConfig, mut out: rtrb::Producer<f32>, levels: Arc<Levels>) -> Result<cpal::Stream, String>
+    fn input<T>(
+        d: &cpal::Device,
+        cfg: StreamConfig,
+        mut out: rtrb::Producer<f32>,
+        levels: Arc<Levels>,
+        tap: TapRef,
+    ) -> Result<cpal::Stream, String>
     where
         T: SizedSample,
         f32: FromSample<T>,
     {
         let ch = cfg.channels as usize;
+        let mut copy = [0.0f32; 512];
         d.build_input_stream::<T, _, _>(
             cfg,
             move |data: &[T], _| {
                 let mut peak = 0.0f32;
+                let mut k = 0;
                 for f in data.chunks(ch) {
                     let l = <f32 as FromSample<T>>::from_sample_(f[0]);
                     let r = if ch > 1 { <f32 as FromSample<T>>::from_sample_(f[1]) } else { l };
                     peak = peak.max(l.abs()).max(r.abs());
                     let _ = out.push(l);
                     let _ = out.push(r);
+                    if let Some(t) = &tap {
+                        copy[k] = l;
+                        copy[k + 1] = r;
+                        k += 2;
+                        if k == copy.len() {
+                            t.push_interleaved(&copy);
+                            k = 0;
+                        }
+                    }
+                }
+                if let (Some(t), true) = (&tap, k > 0) {
+                    t.push_interleaved(&copy[..k]);
                 }
                 Levels::put(&levels.send_peak, peak);
             },
@@ -316,21 +457,21 @@ pub mod hw {
         .map_err(|e| e.to_string())
     }
 
-    pub fn receive(device: &str, sr: u32, reader: Reader, levels: Arc<Levels>) -> Result<Handle, String> {
+    pub fn receive(device: &str, sr: u32, reader: Reader, levels: Arc<Levels>, tap: TapRef) -> Result<Handle, String> {
         let d = find(device).ok_or_else(|| format!("\"{device}\" não encontrado."))?;
         let (ch, fmt) = pick(&d, false, sr).ok_or_else(|| format!("\"{device}\" não tem saída em {sr} Hz."))?;
         let cfg = StreamConfig { channels: ch, sample_rate: sr, buffer_size: cpal::BufferSize::Default };
         let s = match fmt {
-            SampleFormat::F32 => output::<f32>(&d, cfg, reader, levels),
-            SampleFormat::I32 => output::<i32>(&d, cfg, reader, levels),
-            SampleFormat::I24 => output::<cpal::I24>(&d, cfg, reader, levels),
-            _ => output::<i16>(&d, cfg, reader, levels),
+            SampleFormat::F32 => output::<f32>(&d, cfg, reader, levels, tap),
+            SampleFormat::I32 => output::<i32>(&d, cfg, reader, levels, tap),
+            SampleFormat::I24 => output::<cpal::I24>(&d, cfg, reader, levels, tap),
+            _ => output::<i16>(&d, cfg, reader, levels, tap),
         }?;
         s.play().map_err(|e| e.to_string())?;
         Ok(Handle::Stream(s))
     }
 
-    fn output<T>(d: &cpal::Device, cfg: StreamConfig, mut reader: Reader, levels: Arc<Levels>) -> Result<cpal::Stream, String>
+    fn output<T>(d: &cpal::Device, cfg: StreamConfig, mut reader: Reader, levels: Arc<Levels>, tap: TapRef) -> Result<cpal::Stream, String>
     where
         T: SizedSample + FromSample<f32>,
     {
@@ -343,6 +484,9 @@ pub mod hw {
                 {
                     let mut outs: [&mut [f32]; 2] = [&mut l[..frames], &mut r[..frames]];
                     reader.pull_planar(&mut outs, frames);
+                }
+                if let Some(t) = &tap {
+                    t.push_planar(&l[..frames], &r[..frames]);
                 }
                 let mut peak = 0.0f32;
                 for i in 0..frames {
@@ -368,7 +512,7 @@ pub mod hw {
 /// Serve o áudio recebido ao plugin "Sona" do OBS (TCP só neste computador),
 /// no ritmo do relógio deste computador: a deriva da rede já foi compensada
 /// pela ponte, e o OBS usa o mesmo relógio para os instantes.
-fn start_obs_feed(sample_rate: u32, mut reader: Reader, levels: Arc<Levels>) -> Result<Handle, String> {
+fn start_obs_feed(sample_rate: u32, mut reader: Reader, levels: Arc<Levels>, tap: TapRef) -> Result<Handle, String> {
     use sona_obs::feed;
     use std::io::Write;
     let listener = std::net::TcpListener::bind(feed::ADDR)
@@ -400,6 +544,9 @@ fn start_obs_feed(sample_rate: u32, mut reader: Reader, levels: Arc<Levels>) -> 
                 }
                 let peak = l.iter().chain(r.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
                 Levels::put(&levels.recv_peak, peak);
+                if let Some(t) = &tap {
+                    t.push_planar(&l, &r);
+                }
                 feed::interleave(&[&l, &r], FRAMES, &mut bytes);
                 clients.retain_mut(|(c, pending)| {
                     pending.extend_from_slice(&bytes);

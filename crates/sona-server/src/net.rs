@@ -242,9 +242,21 @@ pub async fn bridge_session(app: Shared, socket: axum::extract::ws::WebSocket, p
     };
     let name = if name.is_empty() { format!("Bridge {}", peer.ip()) } else { name };
 
-    // 2. Vaga e lado de rede.
+    // 2. Vaga e lado de rede. Se a vaga de sempre ainda está com este mesmo
+    // bridge (ele reconectou antes de a sessão antiga terminar de fechar),
+    // espera ela ser devolvida em vez de cair em outra vaga.
     let generation = app.generation.load(Relaxed);
     let slots = app.net_slots();
+    let own = hub.sticky.lock().unwrap().get(&name).copied();
+    if let Some(s) = own.and_then(|i| slots.get(i)) {
+        for _ in 0..30 {
+            let same = s.busy.load(Relaxed) && s.name.lock().unwrap().as_deref() == Some(name.as_str());
+            if !same {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     let free: Vec<bool> = slots.iter().map(|s| !s.busy.load(Relaxed)).collect();
     let Some(idx) = hub.pick_slot(&name, &free) else {
         let _ = sink
@@ -339,8 +351,9 @@ pub async fn bridge_session(app: Shared, socket: axum::extract::ws::WebSocket, p
     let _ = hub.cmd.lock().unwrap().send(RxCmd::Remove { session, back: btx });
     let incoming = tokio::task::spawn_blocking(move || brx.recv_timeout(Duration::from_secs(2)).ok()).await.ok().flatten();
     hub.links.lock().unwrap().remove(&idx);
-    if let (Some(incoming), Some(outgoing)) = (incoming, outgoing) {
-        slot.give_back(NetEnds { incoming, outgoing });
+    match (incoming, outgoing) {
+        (Some(incoming), Some(outgoing)) => slot.give_back(NetEnds { incoming, outgoing }),
+        (i, o) => tracing::warn!("vaga {} não devolvida (entrada {}, saída {})", idx + 1, i.is_some(), o.is_some()),
     }
     if app.generation.load(Relaxed) == generation {
         app.store.lock().unwrap().set_net_port(idx, None);

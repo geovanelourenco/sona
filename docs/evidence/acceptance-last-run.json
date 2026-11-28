@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-28T01:19:20.987Z",
+  "at": "2026-11-28T12:35:29.734Z",
   "platform": "linux",
   "results": [
     {
@@ -68,6 +68,11 @@
       "ok": true
     },
     {
+      "id": "FR-13",
+      "name": "player multitrack: envia faixas, toca na mesa; click só no fone",
+      "ok": true
+    },
+    {
       "id": "FR-12",
       "name": "desligar o acesso remoto derruba todos os remotos",
       "ok": true
@@ -75,6 +80,11 @@
     {
       "id": "FR-08",
       "name": "bridge envia e recebe ao mesmo tempo, pela rede, com deriva de 120 ppm",
+      "ok": true
+    },
+    {
+      "id": "FR-08",
+      "name": "bridge: ouvir o que chega numa saída deste computador, sem reconectar ao mudar o volume",
       "ok": true
     },
     {

@@ -5,6 +5,7 @@ import { SonaMark } from './Brand';
 import { Console } from './Console';
 import { Header, type View } from './Header';
 import { Login } from './Login';
+import { Player } from './Player';
 import { Routing } from './Routing';
 import { AudioSetup } from './AudioSetup';
 import { Settings } from './Settings';
@@ -96,7 +97,7 @@ export function App() {
             Sem conexão com o servidor. O áudio continua no servidor; reconectando…
           </div>
         )}
-        {view === 'mesa' ? <Console /> : view === 'rotas' ? <Routing /> : <AudioSetup />}
+        {view === 'mesa' ? <Console /> : view === 'player' ? <Player /> : view === 'rotas' ? <Routing /> : <AudioSetup />}
         {settings && (
           <Settings
             onClose={() => {

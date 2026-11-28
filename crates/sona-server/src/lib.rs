@@ -10,6 +10,7 @@ pub mod audio;
 pub mod auth;
 pub mod bench;
 pub mod net;
+pub mod player;
 pub mod state;
 
 use std::net::SocketAddr;
@@ -93,7 +94,9 @@ pub async fn start(opts: Options) -> Result<Running, String> {
     for w in &store.validation.warnings {
         tracing::warn!("{}: {}", w.code, w.message);
     }
-    let host = audio::host::AudioHost::start(&audio_cfg, engine, (pin, pout), perr, stats.clone());
+    let player = player::Player::new(opts.data.join("multitrack"), audio_cfg.sample_rate);
+    let host =
+        audio::host::AudioHost::start(&audio_cfg, engine, (pin, pout), perr, stats.clone(), Some(player.attach(audio_cfg.sample_rate)));
 
     let mut lan = if bind.ip().is_loopback() { Vec::new() } else { lan_urls(bind.port()) };
     // Anúncio mDNS: bridges acham o servidor sozinhos e o navegador abre sona.local.
@@ -111,11 +114,13 @@ pub async fn start(opts: Options) -> Result<Running, String> {
             }
         }
     };
-    let app = api::App::new(store, auth, stats, host, audio_cfg, audio_path, lan.clone());
+    let app = api::App::new(store, auth, stats, host, audio_cfg, audio_path, lan.clone(), player);
+    app.player_changed();
     *app.announcement.lock().unwrap() = announcement;
     api::spawn_meter_task(app.clone());
     api::spawn_save_task(app.clone());
     api::spawn_rebuild_watch(app.clone());
+    api::spawn_player_task(app.clone());
     net::spawn_udp(app.clone(), bind.port()).await?;
 
     let listener = tokio::net::TcpListener::bind(bind).await.map_err(|e| format!("Não consegui abrir {bind}: {e}"))?;
@@ -135,6 +140,7 @@ impl Running {
         if let Some(h) = app.host.lock().unwrap().take() {
             h.shutdown();
         }
+        app.player.shutdown();
         tracing::info!("Sona parou. Estado salvo.");
     }
 }

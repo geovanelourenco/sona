@@ -36,12 +36,20 @@ pub struct Status {
     pub recv_peak: f32,
     pub sim_latency_ms: Option<f64>,
     pub sim_measurements: u64,
+    /// Escuta local: aparelho, erro e pico.
+    pub monitor_device: Option<String>,
+    pub monitor_error: Option<String>,
+    pub monitor_peak: f32,
 }
 
 pub struct Bridge {
     pub config: Mutex<BridgeConfig>,
     pub status: Mutex<Status>,
     pub levels: Arc<Levels>,
+    /// Pico da escuta (usa `recv_peak` de um `Levels` próprio).
+    pub monitor_levels: Arc<Levels>,
+    /// Volume da escuta; muda na hora, sem reconectar.
+    pub monitor_gain: Arc<std::sync::atomic::AtomicU32>,
     path: PathBuf,
     /// Aumenta para pedir reconexão (configuração mudou).
     restart: AtomicU64,
@@ -51,10 +59,13 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(path: PathBuf) -> Arc<Bridge> {
         let cfg = BridgeConfig::load(&path);
+        let mon_gain = audio::db_to_gain(cfg.monitor.as_ref().map(|m| m.volume_db).unwrap_or(-12.0));
         Arc::new(Bridge {
             config: Mutex::new(cfg),
             status: Mutex::new(Status { state: "parado".into(), ..Default::default() }),
             levels: Arc::new(Levels::default()),
+            monitor_levels: Arc::new(Levels::default()),
+            monitor_gain: Arc::new(std::sync::atomic::AtomicU32::new(mon_gain.to_bits())),
             path,
             restart: AtomicU64::new(0),
             stop: AtomicBool::new(false),
@@ -226,8 +237,33 @@ impl Bridge {
 
         let mut send_err = None;
         let mut recv_err = None;
+        // Escuta: uma saída deste PC que toca a cópia do que chega ou do que sai.
+        let mut mon_err = None;
+        let mut mon_handle = None;
+        let (send_tap, recv_tap) = match cfg.monitor.as_ref().filter(|m| !m.device.is_empty()) {
+            Some(m) => {
+                let (mw, mr, _) = sona_core::drift::bridge(2, sr as f64, 40.0);
+                self.monitor_gain.store(audio::db_to_gain(m.volume_db).to_bits(), Relaxed);
+                match audio::start_receive(&m.device, sr, 0.0, mr, self.monitor_levels.clone(), None) {
+                    Ok(h) => {
+                        mon_handle = Some(h);
+                        let tap = audio::Tap::new(mw, self.monitor_gain.clone());
+                        if m.source == "send" {
+                            (Some(tap), None)
+                        } else {
+                            (None, Some(tap))
+                        }
+                    }
+                    Err(e) => {
+                        mon_err = Some(e);
+                        (None, None)
+                    }
+                }
+            }
+            None => (None, None),
+        };
         let send_handle = cfg.send.as_ref().filter(|e| !e.device.is_empty()).and_then(|e| {
-            match audio::start_send(&e.device, sr, cfg.sim_ppm, tx_prod, self.levels.clone()) {
+            match audio::start_send(&e.device, sr, cfg.sim_ppm, tx_prod, self.levels.clone(), send_tap) {
                 Ok(h) => Some(h),
                 Err(m) => {
                     send_err = Some(m);
@@ -235,13 +271,14 @@ impl Bridge {
                 }
             }
         });
-        let recv_handle = cfg.receive.as_ref().filter(|e| !e.device.is_empty()).and_then(|e| {
-            match audio::start_receive(&e.device, sr, cfg.sim_ppm, reader, self.levels.clone()) {
-                Ok(h) => Some(h),
-                Err(m) => {
-                    recv_err = Some(m);
-                    None
-                }
+        // Sem destino de recepção mas com escuta do que chega: recebe só para ouvir.
+        let recv_dev =
+            cfg.receive.as_ref().map(|e| e.device.clone()).filter(|d| !d.is_empty()).or_else(|| recv_tap.as_ref().map(|_| String::new()));
+        let recv_handle = recv_dev.and_then(|d| match audio::start_receive(&d, sr, cfg.sim_ppm, reader, self.levels.clone(), recv_tap) {
+            Ok(h) => Some(h),
+            Err(m) => {
+                recv_err = Some(m);
+                None
             }
         });
         let sending = send_handle.is_some();
@@ -268,6 +305,8 @@ impl Bridge {
             s.receive_device = cfg.receive.as_ref().map(|e| e.device.clone());
             s.send_error = send_err;
             s.receive_error = recv_err;
+            s.monitor_device = cfg.monitor.as_ref().map(|m| m.device.clone()).filter(|d| !d.is_empty());
+            s.monitor_error = mon_err;
         }
         tracing::info!("conectado a {} (vaga {:?})", cfg.server, slot.map(|x| x + 1));
 
@@ -311,6 +350,7 @@ impl Bridge {
             s.underruns = dstats.underruns.load(Relaxed);
             s.send_peak = s.send_peak.max(Levels::take(&self.levels.send_peak));
             s.recv_peak = s.recv_peak.max(Levels::take(&self.levels.recv_peak));
+            s.monitor_peak = s.monitor_peak.max(Levels::take(&self.monitor_levels.recv_peak));
             let n = self.levels.sim_measurements.load(Relaxed);
             s.sim_measurements = n;
             s.sim_latency_ms = (n > 0).then(|| self.levels.sim_latency_us.load(Relaxed) as f64 / 1000.0);
@@ -318,6 +358,7 @@ impl Bridge {
         stop.store(true, Relaxed);
         drop(send_handle);
         drop(recv_handle);
+        drop(mon_handle);
         let _ = tx_thread.join();
         let _ = rx_thread.join();
         result

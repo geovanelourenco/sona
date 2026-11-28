@@ -115,6 +115,16 @@ pub fn plan_io(cfg: &AudioConfig) -> (IoLayout, u16, u16, Option<String>) {
             io.outputs[idx].connected = false;
         }
     }
+    for (idx, name) in
+        [(PLAYER_SUM, "Player L"), (PLAYER_SUM + 1, "Player R"), (PLAYER_CUE, "Click + guia L"), (PLAYER_CUE + 1, "Click + guia R")]
+    {
+        io.set(false, idx, name.into(), "Player multitrack", DOMAIN_PLAYER);
+    }
+    for k in 0..PLAYER_TRACKS {
+        for (c, side) in ["L", "R"].iter().enumerate() {
+            io.set(false, PLAYER_TRACK_BASE + 2 * k + c, format!("Faixa {} {side}", k + 1), "Player multitrack", DOMAIN_PLAYER);
+        }
+    }
     if err.is_some() {
         for p in io.inputs.iter_mut().chain(io.outputs.iter_mut()).take(PRIMARY_MAX) {
             p.connected = false;
@@ -170,6 +180,7 @@ impl AudioHost {
         primary_ch: (u16, u16),
         primary_error: Option<String>,
         stats: Arc<EngineStats>,
+        player: Option<super::player_rt::PlayerRt>,
     ) -> AudioHost {
         let target = sec_target_ms(cfg);
         let mut sec_in = Vec::new();
@@ -216,7 +227,8 @@ impl AudioHost {
             slots.push(slot);
             net.push(rt);
         }
-        let comp = Composite::new(engine, cfg.block.max(64), sec_in, sec_out, net);
+        let mut comp = Composite::new(engine, cfg.block.max(64), sec_in, sec_out, net);
+        comp.player = player;
         let rebuild = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut inner = Inner {
             cfg: cfg.clone(),

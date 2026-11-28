@@ -1,10 +1,10 @@
-import { GearSix, Headphones, PlugsConnected, SignOut, SlidersHorizontal, TreeStructure } from '@phosphor-icons/react';
+import { GearSix, Headphones, MusicNotes, PlugsConnected, SignOut, SlidersHorizontal, TreeStructure } from '@phosphor-icons/react';
 import { useMixer } from '../lib/store';
 import { SonaLogo } from './Brand';
 import { Scenes } from './Scenes';
 import { cx } from './kit';
 
-export type View = 'mesa' | 'rotas' | 'audio';
+export type View = 'mesa' | 'player' | 'rotas' | 'audio';
 
 function EngineBadge() {
   const e = useMixer((s) => s.engine);
@@ -42,6 +42,7 @@ export function Header({ view, setView, onSettings, onLogout }: { view: View; se
         {(
           [
             ['mesa', 'Mesa', SlidersHorizontal],
+            ['player', 'Player', MusicNotes],
             ['rotas', 'Roteamento', TreeStructure],
             ['audio', 'Áudio', PlugsConnected],
           ] as const

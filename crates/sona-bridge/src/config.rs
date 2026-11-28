@@ -11,6 +11,23 @@ pub struct Endpoint {
     pub channels: u16,
 }
 
+/// Escuta local: toca uma cópia do que chega (ou do que sai) numa saída deste
+/// computador, sem mudar o que vai para o OBS ou para o servidor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Monitor {
+    pub device: String,
+    /// "receive" (o que chega do servidor) ou "send" (o que este PC envia).
+    pub source: String,
+    pub volume_db: f32,
+}
+
+impl Default for Monitor {
+    fn default() -> Self {
+        Monitor { device: String::new(), source: "receive".into(), volume_db: -12.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BridgeConfig {
@@ -27,6 +44,8 @@ pub struct BridgeConfig {
     pub send: Option<Endpoint>,
     /// Aparelho que toca o que vem do servidor (ex.: "CABLE Input" para o OBS).
     pub receive: Option<Endpoint>,
+    /// Escuta ligada (None = desligada).
+    pub monitor: Option<Monitor>,
     /// Desvio do relógio dos aparelhos simulados, em ppm (testes de deriva).
     pub sim_ppm: f64,
 }
@@ -40,6 +59,7 @@ impl Default for BridgeConfig {
             token: String::new(),
             send: None,
             receive: None,
+            monitor: None,
             sim_ppm: 0.0,
         }
     }
