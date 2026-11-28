@@ -95,7 +95,7 @@ pub fn default_mixer(io: &IoLayout) -> MixerConfig {
         });
     };
     let mut k = 0;
-    for p in io.inputs.iter().take(SECONDARY_BASE).filter(|p| p.present).take(32) {
+    for p in io.inputs.iter().take(SECONDARY_BASE).filter(|p| p.present) {
         k += 1;
         push(&mut cfg, format!("Ch {k}"), SourceMap::Mono { input: p.index }, false);
     }
@@ -118,56 +118,50 @@ pub fn default_mixer(io: &IoLayout) -> MixerConfig {
 
 pub use sona_core::level::OFF_DB;
 
-/// Canais "Ch N" para as entradas do principal (até 32), como no mix inicial.
-fn primary_channels(io: &IoLayout, n_buses: usize) -> Vec<ChannelConfig> {
-    use crate::audio::SECONDARY_BASE;
-    io.inputs
-        .iter()
-        .take(SECONDARY_BASE)
-        .filter(|p| p.present)
-        .take(32)
-        .enumerate()
-        .map(|(k, p)| ChannelConfig {
-            name: format!("Ch {}", k + 1),
-            source: SourceMap::Mono { input: p.index },
-            fader_db: OFF_DB,
-            sends: (0..n_buses.min(3))
-                .map(|b| SendConfig { bus: b, enabled: b != 1, level_db: if b == 1 { OFF_DB } else { 0.0 }, ..Default::default() })
-                .collect(),
-            ..Default::default()
-        })
-        .collect()
+fn primary_channel(p: &crate::audio::Port, n_buses: usize) -> ChannelConfig {
+    ChannelConfig {
+        name: format!("Ch {}", p.index + 1),
+        source: SourceMap::Mono { input: p.index },
+        fader_db: OFF_DB,
+        sends: (0..n_buses.min(3))
+            .map(|b| SendConfig { bus: b, enabled: b != 1, level_db: if b == 1 { OFF_DB } else { 0.0 }, ..Default::default() })
+            .collect(),
+        ..Default::default()
+    }
 }
 
-/// Se nenhum canal usa as entradas do principal (ex.: a mesa foi escolhida
-/// depois da primeira configuração), cria um canal para cada entrada no começo
-/// da mesa. Índices de solo e cenas são deslocados juntos. `true` se mudou.
+/// Garante um canal para cada entrada do principal (ex.: a mesa foi escolhida
+/// depois da primeira configuração, ou o driver tem entradas além das 32, como
+/// o Player L/R da Ui24R). Entradas sem canal entram depois do último canal que
+/// já usa o principal (ou no começo, se nenhum usa). Índices de solo e cenas
+/// são deslocados juntos. `true` se mudou.
 pub fn adopt_primary_inputs(mixer: &mut MixerConfig, scenes: &mut BTreeMap<String, MixerConfig>, io: &IoLayout) -> bool {
     use crate::audio::SECONDARY_BASE;
-    let uses_primary = |m: &MixerConfig| m.channels.iter().any(|c| c.source.inputs().any(|i| i < SECONDARY_BASE));
-    if uses_primary(mixer) {
+    let used: std::collections::HashSet<usize> = mixer.channels.iter().flat_map(|c| c.source.inputs()).collect();
+    let missing: Vec<&crate::audio::Port> =
+        io.inputs.iter().take(SECONDARY_BASE).filter(|p| p.present && !used.contains(&p.index)).collect();
+    if missing.is_empty() {
         return false;
     }
-    let new = primary_channels(io, mixer.buses.len());
-    if new.is_empty() {
-        return false;
-    }
+    let at = mixer.channels.iter().rposition(|c| c.source.inputs().any(|i| i < SECONDARY_BASE)).map(|i| i + 1).unwrap_or(0);
+    let new: Vec<ChannelConfig> = missing.iter().map(|p| primary_channel(p, mixer.buses.len())).collect();
     let n = new.len();
-    let shift = |m: &mut MixerConfig| {
-        let mut chans = new.clone();
-        chans.append(&mut m.channels);
-        m.channels = chans;
+    let insert = |m: &mut MixerConfig| {
+        let pos = at.min(m.channels.len());
+        m.channels.splice(pos..pos, new.iter().cloned());
         for b in &mut m.buses {
             if let Some(mon) = &mut b.monitor {
                 for c in &mut mon.solo {
-                    *c += n;
+                    if *c >= pos {
+                        *c += n;
+                    }
                 }
             }
         }
     };
-    shift(mixer);
+    insert(mixer);
     for sc in scenes.values_mut() {
-        shift(sc);
+        insert(sc);
     }
     true
 }
@@ -453,11 +447,37 @@ mod tests {
         let (io1, ..) = plan_io(&AudioConfig { primary: "sim".into(), ..Default::default() });
         assert!(adopt_primary_inputs(&mut mixer, &mut scenes, &io1));
         assert_eq!(mixer.channels.len(), rede + 24);
+        assert_eq!(mixer.channels[23].name, "Ch 24");
         assert_eq!(mixer.channels[0].name, "Ch 1");
         assert_eq!(mixer.channels[0].source, SourceMap::Mono { input: 0 });
         assert_eq!(mixer.buses[3].monitor.as_ref().unwrap().solo, vec![24], "solo segue o mesmo canal");
         assert_eq!(scenes["Culto"].channels.len(), rede + 24, "cena deslocada junto");
         // Segunda vez não duplica.
         assert!(!adopt_primary_inputs(&mut mixer, &mut scenes, &io1));
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use crate::audio::{config::AudioConfig, host::plan_io};
+
+    /// Driver com entradas além das que já têm canal (ex.: Player L/R depois
+    /// do 32): os canais novos entram logo depois do último canal da mesa.
+    #[test]
+    fn entradas_extras_entram_depois_dos_canais_da_mesa() {
+        let (io, ..) = plan_io(&AudioConfig { primary: "sim".into(), ..Default::default() });
+        let mut mixer = default_mixer(&io);
+        // Simula uma instalação antiga que só criou 22 canais da mesa.
+        mixer.channels.drain(22..24);
+        let total = mixer.channels.len();
+        mixer.buses[3].monitor.as_mut().unwrap().solo = vec![1, 22];
+        let mut scenes = BTreeMap::new();
+        assert!(adopt_primary_inputs(&mut mixer, &mut scenes, &io));
+        assert_eq!(mixer.channels.len(), total + 2);
+        assert_eq!(mixer.channels[22].name, "Ch 23");
+        assert_eq!(mixer.channels[23].source, SourceMap::Mono { input: 23 });
+        assert_eq!(mixer.buses[3].monitor.as_ref().unwrap().solo, vec![1, 24], "solo depois do ponto de inserção desloca");
+        assert!(!adopt_primary_inputs(&mut mixer, &mut scenes, &io), "não duplica");
     }
 }

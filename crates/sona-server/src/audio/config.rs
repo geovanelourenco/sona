@@ -45,7 +45,7 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        AudioConfig { sample_rate: 48_000, block: 128, primary: PRIMARY_SIM.into(), primary_channels: 0, secondary: Vec::new() }
+        AudioConfig { sample_rate: 48_000, block: 256, primary: PRIMARY_SIM.into(), primary_channels: 0, secondary: Vec::new() }
     }
 }
 

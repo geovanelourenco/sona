@@ -186,8 +186,9 @@ await check('FR-06', 'sem nenhum navegador, o áudio continua', async () => {
   await sleep(1000);
   const h2 = await (await fetch(`${base}/api/health`)).json();
   const blocks = h2.engine.blocks - h1.engine.blocks;
-  // 1 s a 48 kHz / 128 = 375 blocos. Aceita ±10 % de folga do sleep.
-  assert.ok(blocks > 330 && blocks < 420, `blocos em 1 s: ${blocks}`);
+  // 1 s a 48 kHz / bloco. Aceita ±12 % de folga do sleep.
+  const expected = h2.engine.sample_rate / h2.engine.block;
+  assert.ok(Math.abs(blocks - expected) < expected * 0.12, `blocos em 1 s: ${blocks} (esperado ~${expected})`);
   assert.equal(h2.engine.running, true);
 });
 

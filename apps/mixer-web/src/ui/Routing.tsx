@@ -18,8 +18,12 @@ export function Routing() {
   // Pares L/R primeiro (fontes estéreo), depois cada canal.
   for (const p of present) {
     const r = ins[p.index + 1];
-    if (p.name.endsWith(' L') && r?.present && r.name.endsWith(' R'))
+    if (!r?.present) continue;
+    if (p.name.endsWith(' L') && r.name.endsWith(' R'))
       sourceOptions.push({ key: `s:${p.index}:${r.index}`, label: `${p.name.replace(/ L$/, '')} (estéreo)`, value: { kind: 'stereo', left: p.index, right: r.index } });
+    // Entradas da mesa (USB 1, USB 2…): pares ímpar/par, ex. "USB 33 + USB 34" (Player L/R).
+    else if (p.index < 64 && p.index % 2 === 0 && p.domain === r.domain)
+      sourceOptions.push({ key: `s:${p.index}:${r.index}`, label: `${p.name} + ${r.name} (estéreo)`, value: { kind: 'stereo', left: p.index, right: r.index } });
   }
   for (const p of present) sourceOptions.push({ key: `m:${p.index}`, label: p.name, value: { kind: 'mono', input: p.index } });
   const known = (s: SourceMap) => sourceOptions.some((o) => o.key === sourceKey(s));

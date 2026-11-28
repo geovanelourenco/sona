@@ -129,3 +129,17 @@ dispositivos do driver "Soundcraft MADI-USB Combo card" no WASAPI, como pares
 estéreo ("Line Out 03/04 … 27/28"), além do Voicemeeter instalado na máquina.
 Consequência: escolher um par dá só 2 canais. Build com ASIO feito em seguida
 (ADR 0002); ainda não testado na máquina.
+
+## Bancada com a Ui24R (2026-11-27/28)
+
+Relato do responsável do produto, com fotos:
+
+- ASIO funcionou: "Soundcraft USB Audio ASIO", 48 kHz; o mixer ganhou Ch 1–32
+  (USB 1–32). Sinal chegou ao subir os faders (os medidores dos canais medem
+  depois do fader).
+- Áudio "robotizado" em alguns momentos com bloco 128; resolvido aumentando o
+  bloco na vista Áudio. Instalações novas passam a começar com 256.
+- Sona Bridge conectou pela rede (192.168.1.132:7340), ~33 mil pacotes em cada
+  sentido, perdas mínimas.
+- Pedidos atendidos em seguida: restaurar módulos do canal, canais para
+  entradas além do 32 (Player L/R), pares estéreo das entradas USB.
